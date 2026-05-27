@@ -1,0 +1,30 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": ".NET: Launch Everboot (Debug)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/src/Everboot/bin/Debug/net10.0/Everboot.dll",
+      "args": [],
+      "cwd": "${workspaceFolder}/src/Everboot",
+      "stopAtEntry": false,
+      "console": "integratedTerminal",
+      "internalConsoleOptions": "neverOpen",
+      "logging": {
+        "moduleLoad": false,
+        "engineLogging": false
+      },
+      "env": {
+        "EVERBOOT_LOG_DIR": "${workspaceFolder}/logs",
+        "Everboot__DataDirectory": "${workspaceFolder}/data"
+      }
+    },
+    {
+      "name": ".NET: Attach",
+      "type": "coreclr",
+      "request": "attach"
+    }
+  ]
+}

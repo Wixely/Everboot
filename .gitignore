@@ -1,0 +1,129 @@
+# ---------------------------------------------------------------------------
+# Build outputs
+# ---------------------------------------------------------------------------
+bin/
+obj/
+out/
+publish/
+artifacts/
+**/AppPackages/
+**/BundleArtifacts/
+
+# ---------------------------------------------------------------------------
+# .NET / NuGet
+# ---------------------------------------------------------------------------
+*.user
+*.suo
+*.userprefs
+*.userosscache
+*.sln.docstates
+*.dbmdl
+*.dbproj.schemaview
+*.jfm
+*.lock.json
+*.binlog
+project.lock.json
+project.fragment.lock.json
+.packages/
+packages/
+**/*.nupkg
+**/*.snupkg
+.nuget/
+local-feed/
+
+# Roslyn cache / IDE
+.vs/
+.vshistory/
+*.cache
+*.tlog
+*.swp
+
+# Test & coverage
+[Tt]est[Rr]esult*/
+[Cc]overage*/
+coverage.*.xml
+coverage.cobertura.xml
+*.coverage
+*.coveragexml
+.coverlet/
+BenchmarkDotNet.Artifacts/
+
+# Publish artifacts
+*.pubxml.user
+*.publishproj
+PublishProfiles/*.pubxml.user
+
+# Native AOT / ReadyToRun intermediate
+*.ilc.rsp
+*.r2r.*
+
+# ---------------------------------------------------------------------------
+# Tools / Rider / ReSharper
+# ---------------------------------------------------------------------------
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+.idea/
+
+# ---------------------------------------------------------------------------
+# VS Code
+#   Keep launch.json and tasks.json committed (they're part of the dev UX),
+#   but ignore everything else under .vscode/.
+# ---------------------------------------------------------------------------
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
+!.vscode/settings.shared.json
+.history/
+
+# ---------------------------------------------------------------------------
+# Boot payloads — keep folder structure, ignore the (large/binary) contents.
+# ---------------------------------------------------------------------------
+data/isos/*
+!data/isos/.gitkeep
+data/tftp/*
+!data/tftp/.gitkeep
+data/test-fixtures/
+data/cache/
+
+# ---------------------------------------------------------------------------
+# Logs (runtime output)
+# ---------------------------------------------------------------------------
+logs/
+*.log
+*.log.*
+
+# ---------------------------------------------------------------------------
+# OS junk
+# ---------------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ---------------------------------------------------------------------------
+# Environment / secrets — never commit
+# ---------------------------------------------------------------------------
+*.env
+.env
+.env.*
+!.env.example
+appsettings.*.Local.json
+secrets.json
+*.pfx
+*.key
+*.pem
+
+# ---------------------------------------------------------------------------
+# Docker
+# ---------------------------------------------------------------------------
+.docker/
+
+# ---------------------------------------------------------------------------
+# Misc
+# ---------------------------------------------------------------------------
+*.bak
+*.tmp
+*~

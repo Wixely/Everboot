@@ -1,0 +1,12 @@
+{
+  "profiles": {
+    "Everboot": {
+      "commandName": "Project",
+      "workingDirectory": "$(ProjectDir)",
+      "environmentVariables": {
+        "EVERBOOT_LOG_DIR": "$(SolutionDir)logs",
+        "Everboot__DataDirectory": "$(SolutionDir)data"
+      }
+    }
+  }
+}
