@@ -68,6 +68,8 @@ Replace `linux-x64` with `win-x64` for a Windows binary.
 
 ## Run in Docker
 
+For a one-off `docker run`:
+
 ```bash
 docker build -t everboot:dev .
 docker run --rm --network host \
@@ -76,7 +78,9 @@ docker run --rm --network host \
   everboot:dev
 ```
 
-`--network host` is the simplest option - PXE/DHCP need raw access to the broadcast domain. Mount your ISO library at `/data/isos/`.
+For a real deployment (Portainer, Compose, etc.) use the sample stack at [examples/docker-compose.yml](examples/docker-compose.yml) — it pulls `ghcr.io/wixely/everboot:latest`, uses host networking, bind-mounts `data/` + `logs/`, and has every env-var override pre-documented inline.
+
+`--network host` is the simplest option — PXE/DHCP need raw access to the broadcast domain. Mount your ISO library at `/data/isos/`.
 
 ## Configuration
 

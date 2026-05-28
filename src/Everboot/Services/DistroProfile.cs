@@ -77,7 +77,14 @@ internal static class DistroProfiles
     {
         // -----------------------------------------------------------------
         // Ubuntu and downstream (Mint, Pop, elementary) - all use casper.
-        // Direct-boot codified because the casper layout is rock-stable.
+        //
+        // Crucial detail: casper running under PXE cannot see iPXE's sanboot
+        // virtual disk after the kernel takes over (firmware-only handoff).
+        // The working pattern is `netboot=httpfs` + `fetch=<squashfs-url>` so
+        // casper downloads the squashfs over plain HTTP via its own initrd
+        // wget. We point fetch at our in-ISO streaming route so the squashfs
+        // is read on the fly straight out of the original .iso file - no
+        // extraction, no per-ISO cache.
         // -----------------------------------------------------------------
         new("ubuntu", "Ubuntu", DistroFamily.LinuxLive,
             new Regex("^ubuntu", Opt),
@@ -85,7 +92,7 @@ internal static class DistroProfiles
             new DirectBoot(
                 "casper/vmlinuz",
                 "casper/initrd",
-                "boot=casper netboot=url url=http://{server}/isos/{file} ip=dhcp ---"),
+                "boot=casper netboot=httpfs ip=dhcp fetch=http://{server}/iso/{slug}/casper/filesystem.squashfs url=http://{server}/isos/{file} ---"),
             null),
 
         new("mint", "Linux Mint", DistroFamily.LinuxLive,
@@ -94,7 +101,7 @@ internal static class DistroProfiles
             new DirectBoot(
                 "casper/vmlinuz",
                 "casper/initrd",
-                "boot=casper netboot=url url=http://{server}/isos/{file} ip=dhcp ---"),
+                "boot=casper netboot=httpfs ip=dhcp fetch=http://{server}/iso/{slug}/casper/filesystem.squashfs url=http://{server}/isos/{file} ---"),
             null),
 
         new("popos", "Pop!_OS", DistroFamily.LinuxLive,
@@ -103,7 +110,7 @@ internal static class DistroProfiles
             new DirectBoot(
                 "casper/vmlinuz",
                 "casper/initrd",
-                "boot=casper netboot=url url=http://{server}/isos/{file} ip=dhcp ---"),
+                "boot=casper netboot=httpfs ip=dhcp fetch=http://{server}/iso/{slug}/casper/filesystem.squashfs url=http://{server}/isos/{file} ---"),
             null),
 
         // -----------------------------------------------------------------
@@ -128,10 +135,16 @@ internal static class DistroProfiles
         // -----------------------------------------------------------------
         // Other major distros - detect only, no direct boot.
         // -----------------------------------------------------------------
+        // Fedora Workstation Live uses dracut + dmsquash-live. root=live:URL
+        // tells dracut to fetch the squashfs over HTTP. Same trick as casper:
+        // bypass iPXE's sanboot disk and let the kernel pull the rootfs.
         new("fedora", "Fedora", DistroFamily.LinuxLive,
             new Regex("^fedora", Opt),
             new[] { "LiveOS/squashfs.img", "isolinux/vmlinuz", "images/pxeboot/vmlinuz" },
-            null,
+            new DirectBoot(
+                "isolinux/vmlinuz",
+                "isolinux/initrd.img",
+                "root=live:http://{server}/iso/{slug}/LiveOS/squashfs.img rd.live.image ip=dhcp"),
             null),
 
         new("rhel-family", "RHEL-family installer", DistroFamily.LinuxInstaller,

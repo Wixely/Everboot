@@ -1,0 +1,105 @@
+# Everboot - sample Docker Compose stack.
+#
+# Drop this into Portainer (Stacks -> Add stack -> Web editor), or run with:
+#   docker compose -f examples/docker-compose.yml up -d
+#
+# Before first deploy, prepare the bind-mount directories on the Docker host:
+#   sudo mkdir -p /opt/everboot/data/isos /opt/everboot/data/tftp /opt/everboot/logs
+#   sudo chown -R 0:0 /opt/everboot   # container runs as root for privileged ports
+#
+# Then drop boot loaders into /opt/everboot/data/tftp/:
+#   ipxe.efi        UEFI x64 PXE clients
+#   snponly.efi     UEFI x64 (more compatible than ipxe.efi)
+#   undionly.kpxe   legacy BIOS PXE clients
+#   wimboot         (optional) needed to boot Windows ISOs - https://ipxe.org/wimboot
+#   memdisk         (optional) needed for floppy .img boot - syslinux project
+#
+# And drop your ISOs (.iso or .img) into /opt/everboot/data/isos/.
+
+version: "3.8"
+
+services:
+  everboot:
+    image: ghcr.io/wixely/everboot:latest
+    container_name: everboot
+    restart: unless-stopped
+
+    # PXE clients DHCPDISCOVER as a broadcast. Host networking lets the
+    # container receive those broadcasts and bind 67/69/445/3260 directly on
+    # the host's IP. Trade-off: no network isolation; the container shares
+    # the host's network stack.
+    #
+    # Linux Docker hosts only. Docker Desktop on Windows/Mac runs Docker
+    # inside a VM and host networking won't reach the physical LAN.
+    network_mode: host
+
+    volumes:
+      - /opt/everboot/data:/data
+      - /opt/everboot/logs:/var/log/everboot
+
+    environment:
+      DOTNET_ENVIRONMENT: Production
+
+      # Default is 8080. Override if another service on the host already has it.
+      # Whatever you pick, the iPXE menu + DHCP boot-file URL pick it up
+      # automatically - no other config changes needed.
+      Everboot__Http__Port: "8088"
+
+      # -----------------------------------------------------------------
+      # Optional overrides - leave commented unless you need them.
+      # -----------------------------------------------------------------
+
+      # Force the DHCP `siaddr` / iPXE chainload URL to a specific NIC IP.
+      # Auto-detected from the first non-loopback IPv4 if not set.
+      # Everboot__Dhcp__ServerAddress: "192.168.1.10"
+
+      # If your host already runs DHCP / SMB / iSCSI you'll get a bind clash.
+      # Disable individual services rather than fight for the port:
+      # Everboot__Dhcp__Enabled: "false"
+      # Everboot__Smb__Enabled: "false"
+      # Everboot__Iscsi__Enabled: "false"
+
+      # iSCSI sanboot URLs in the menu (instead of HTTP). Helps for some
+      # Windows / VMware boot scenarios. Does NOT help with Linux live ISOs -
+      # those need direct kernel boot which Everboot already codifies for
+      # Ubuntu / Mint / Pop / Fedora. Default off.
+      # Everboot__Iscsi__UseForSanboot: "true"
+
+      # If you'd rather not have the second "(sanboot fallback)" item under
+      # each direct-bootable distro entry, set this to false.
+      # Everboot__Menu__IncludeSanbootFallback: "false"
+
+      # Verbose logging while you're sorting out an issue.
+      # Logging__LogLevel__Default: "Debug"
+
+    # The image runs as root so it can bind TFTP/69, DHCP/67, SMB/445.
+    # If you'd rather run non-root, switch USER in the Dockerfile and grant
+    # CAP_NET_BIND_SERVICE here:
+    # user: "1000:1000"
+    # cap_add:
+    #   - NET_BIND_SERVICE
+
+# -----------------------------------------------------------------------
+# After-deploy verification
+# -----------------------------------------------------------------------
+# docker logs everboot | grep -E "listening|catalog"
+#   ^ should show one "listening" line per service and a "Catalog refreshed" line
+#
+# curl http://<host-ip>:8088/             human index of detected images
+# curl http://<host-ip>:8088/boot.ipxe    iPXE menu PXE clients receive
+#
+# Then PXE-boot a client on the same broadcast domain.
+#
+# -----------------------------------------------------------------------
+# Common gotchas
+# -----------------------------------------------------------------------
+# 1. The image at ghcr.io/wixely/everboot:latest only exists after the GitHub
+#    Actions workflow at .github/workflows/build-release-packages.yml has
+#    pushed a tagged release. `git tag v0.1.0 && git push --tags` triggers it.
+#
+# 2. If the host already runs its own DHCP server they'll fight for UDP/67.
+#    Either run Everboot on a separate box on the same LAN, or disable
+#    Everboot's DHCP (above) and configure your real DHCP to advertise the
+#    PXE info itself (next-server + filename options).
+#
+# 3. Same applies for SMB (port 445) if the host runs Samba.
