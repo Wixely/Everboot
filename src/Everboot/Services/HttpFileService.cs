@@ -102,16 +102,28 @@ internal sealed class HttpFileService : BackgroundService
 
         try
         {
+            if (request.HttpMethod == "POST" && path == "/refresh")
+            {
+                await HandleRefreshAsync(response, stoppingToken).ConfigureAwait(false);
+                return;
+            }
+
             if (request.HttpMethod is not ("GET" or "HEAD"))
             {
                 response.StatusCode = (int)HttpStatusCode.MethodNotAllowed;
-                response.AddHeader("Allow", "GET, HEAD");
+                response.AddHeader("Allow", "GET, HEAD, POST");
                 return;
             }
 
             if (path is "/" or "/index.html")
             {
                 await WriteIndexAsync(response, stoppingToken).ConfigureAwait(false);
+                return;
+            }
+
+            if (path is "/diagnose" or "/diagnose.html")
+            {
+                await WriteDiagnoseAsync(response, stoppingToken).ConfigureAwait(false);
                 return;
             }
 
@@ -194,14 +206,23 @@ internal sealed class HttpFileService : BackgroundService
         sb.AppendLine("<!doctype html><html><head><meta charset=\"utf-8\"><title>Everboot</title>");
         sb.AppendLine("<style>body{font-family:system-ui,sans-serif;max-width:48rem;margin:2rem auto;padding:0 1rem;color:#111}");
         sb.AppendLine("table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem .6rem;border-bottom:1px solid #ddd}");
-        sb.AppendLine("code{background:#f4f4f4;padding:.1rem .3rem;border-radius:3px}</style></head><body>");
+        sb.AppendLine("code{background:#f4f4f4;padding:.1rem .3rem;border-radius:3px}");
+        sb.AppendLine("button{font:inherit;padding:.4rem .8rem;border:1px solid #999;background:#f4f4f4;border-radius:4px;cursor:pointer}");
+        sb.AppendLine("button:hover{background:#e8e8e8}.toolbar{margin:1rem 0;display:flex;gap:.5rem;align-items:center}</style></head><body>");
         sb.AppendLine("<h1>Everboot</h1>");
-        sb.AppendLine($"<p>iPXE menu: <code>/boot.ipxe</code>. ISO directory: <code>{WebUtility.HtmlEncode(_catalog.IsoDirectory)}</code>.</p>");
+        sb.AppendLine($"<p>iPXE menu: <code><a href=\"/boot.ipxe\">/boot.ipxe</a></code>. ISO directory: <code>{WebUtility.HtmlEncode(_catalog.IsoDirectory)}</code>.</p>");
+
+        sb.AppendLine("<div class=\"toolbar\">");
+        sb.AppendLine("  <form method=\"post\" action=\"/refresh\" style=\"display:inline;margin:0\">");
+        sb.AppendLine("    <button type=\"submit\">Refresh catalog</button>");
+        sb.AppendLine("  </form>");
+        sb.AppendLine("  <a href=\"/diagnose\">Diagnose detection</a>");
+        sb.AppendLine("</div>");
 
         var entries = _catalog.Entries;
         if (entries.Count == 0)
         {
-            sb.AppendLine("<p><em>No ISOs found. Drop <code>*.iso</code> files into the directory above.</em></p>");
+            sb.AppendLine("<p><em>No images found. Drop <code>*.iso</code> or <code>*.img</code> files into the directory above, then click <strong>Refresh catalog</strong>.</em></p>");
         }
         else
         {
@@ -215,6 +236,90 @@ internal sealed class HttpFileService : BackgroundService
             }
             sb.AppendLine("</tbody></table>");
         }
+        sb.AppendLine("</body></html>");
+
+        var bytes = Encoding.UTF8.GetBytes(sb.ToString());
+        response.StatusCode = (int)HttpStatusCode.OK;
+        response.ContentType = "text/html; charset=utf-8";
+        response.ContentLength64 = bytes.Length;
+        await response.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
+    }
+
+    private async Task HandleRefreshAsync(HttpListenerResponse response, CancellationToken ct)
+    {
+        _logger.LogInformation("Refresh catalog requested via web UI");
+        _catalog.ForceRescan();
+        response.StatusCode = (int)HttpStatusCode.SeeOther;
+        response.AddHeader("Location", "/");
+        response.ContentLength64 = 0;
+        await Task.CompletedTask;
+    }
+
+    private async Task WriteDiagnoseAsync(HttpListenerResponse response, CancellationToken ct)
+    {
+        var entries = _catalog.Entries;
+        var sb = new StringBuilder(8192);
+
+        sb.AppendLine("<!doctype html><html><head><meta charset=\"utf-8\"><title>Everboot - diagnose</title>");
+        sb.AppendLine("<style>body{font-family:system-ui,sans-serif;max-width:72rem;margin:2rem auto;padding:0 1rem;color:#111}");
+        sb.AppendLine("table{border-collapse:collapse;width:100%;font-size:.9rem}th,td{text-align:left;padding:.4rem .6rem;border-bottom:1px solid #ddd;vertical-align:top}");
+        sb.AppendLine("th{background:#f4f4f4}code{background:#f4f4f4;padding:.1rem .3rem;border-radius:3px;font-size:.85em}");
+        sb.AppendLine(".no{color:#999}.yes{color:#080}.warn{color:#a60}</style></head><body>");
+        sb.AppendLine("<h1>Catalog detection diagnostics</h1>");
+        sb.AppendLine($"<p><a href=\"/\">&larr; back to index</a></p>");
+        sb.AppendLine($"<p>ISO directory: <code>{WebUtility.HtmlEncode(_catalog.IsoDirectory)}</code> &nbsp;|&nbsp; {entries.Count} image(s)</p>");
+
+        if (entries.Count == 0)
+        {
+            sb.AppendLine("<p><em>No images in catalog.</em></p>");
+        }
+        else
+        {
+            sb.AppendLine("<table><thead><tr>");
+            sb.AppendLine("<th>File</th><th>Size</th><th>Volume label</th><th>Layout</th><th>Windows era</th><th>Profile</th><th>Direct boot</th><th>Floppy</th>");
+            sb.AppendLine("</tr></thead><tbody>");
+
+            foreach (var entry in entries)
+            {
+                var m = entry.Metadata;
+                var profileCell = m.Profile is { } p
+                    ? $"<span class=\"yes\">{WebUtility.HtmlEncode(p.Id)}</span><br><small>{WebUtility.HtmlEncode(p.DisplayName)} &middot; {p.Family}</small>"
+                    : "<span class=\"no\">(no match)</span>";
+
+                var layoutCell = m.Layout == IsoLayout.None
+                    ? "<span class=\"no\">none (raw image)</span>"
+                    : WebUtility.HtmlEncode(m.Layout.ToString());
+
+                var eraCell = m.WindowsEra == WindowsBootEra.None
+                    ? "<span class=\"no\">none</span>"
+                    : (m.WindowsEra == WindowsBootEra.Modern ? "<span class=\"yes\">Modern</span>" : $"<span class=\"warn\">{m.WindowsEra}</span>");
+
+                var directBootCell = m.Profile?.DirectBoot is { } db
+                    ? $"<span class=\"yes\">yes</span><br><small><code>{WebUtility.HtmlEncode(db.KernelPath)}</code></small>"
+                    : "<span class=\"no\">no</span>";
+
+                var floppyCell = entry.IsLikelyFloppy ? "<span class=\"yes\">yes</span>" : "<span class=\"no\">no</span>";
+
+                sb.Append("<tr>")
+                  .Append("<td>").Append(WebUtility.HtmlEncode(entry.FileName)).Append("<br><small>slug: <code>").Append(WebUtility.HtmlEncode(entry.Slug)).Append("</code></small></td>")
+                  .Append("<td>").Append(FormatSize(entry.SizeBytes)).Append("</td>")
+                  .Append("<td>").Append(m.VolumeLabel is null ? "<span class=\"no\">none</span>" : $"<code>{WebUtility.HtmlEncode(m.VolumeLabel)}</code>").Append("</td>")
+                  .Append("<td>").Append(layoutCell).Append("</td>")
+                  .Append("<td>").Append(eraCell).Append("</td>")
+                  .Append("<td>").Append(profileCell).Append("</td>")
+                  .Append("<td>").Append(directBootCell).Append("</td>")
+                  .Append("<td>").Append(floppyCell).Append("</td>")
+                  .AppendLine("</tr>");
+            }
+            sb.AppendLine("</tbody></table>");
+
+            sb.AppendLine("<h2>Reading the table</h2><ul>");
+            sb.AppendLine("<li><strong>Profile = (no match)</strong> means none of the codified distro patterns recognised this image. It falls through to plain sanboot. To make detection match, the volume label needs to start with the expected prefix (e.g. <code>Ubuntu</code>, <code>Pop_OS</code>) <em>and</em> the expected marker files must exist at the expected paths inside the ISO.</li>");
+            sb.AppendLine("<li><strong>Direct boot = yes</strong> means the iPXE menu emits a direct kernel+initrd entry for this image. <strong>no</strong> means it sanboots.</li>");
+            sb.AppendLine("<li><strong>Layout = none (raw image)</strong> means we couldn't read an ISO9660 or UDF filesystem inside - either a raw disk image (typical for <code>.img</code>) or a corrupt ISO.</li>");
+            sb.AppendLine("</ul>");
+        }
+
         sb.AppendLine("</body></html>");
 
         var bytes = Encoding.UTF8.GetBytes(sb.ToString());

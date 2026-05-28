@@ -9,6 +9,16 @@ internal sealed class EverbootOptions
     [Required]
     public string DataDirectory { get; set; } = "./data";
 
+    /// <summary>
+    /// Periodic catalog rescan interval in seconds, in addition to the
+    /// FileSystemWatcher-driven rescans. Catches changes when the watcher
+    /// misses events (bind-mounts, network FS, Docker volumes). Set to 0
+    /// to disable periodic rescans entirely. Minimum effective interval
+    /// is 5 seconds to avoid hammering disk.
+    /// </summary>
+    [Range(0, 86400)]
+    public int CatalogRescanIntervalSeconds { get; set; } = 60;
+
     public HttpOptions Http { get; set; } = new();
 
     public TftpOptions Tftp { get; set; } = new();
@@ -167,9 +177,29 @@ internal sealed class BootMenuOptions
     public int TimeoutSeconds { get; set; } = 60;
 
     /// <summary>
-    /// When a distro has a codified direct-kernel boot profile, also emit a
-    /// secondary "(sanboot fallback)" menu item that boots the raw ISO. Acts
-    /// as a manual escape hatch if our direct-boot args go stale.
+    /// Each ISO opens a per-image submenu listing every applicable boot
+    /// method (auto / direct / wimboot / sanboot http / sanboot iscsi /
+    /// memdisk / shell). This is the auto-pick timeout for that submenu.
+    /// Set to 0 to disable auto-pick (user must select manually).
     /// </summary>
-    public bool IncludeSanbootFallback { get; set; } = true;
+    [Range(0, 3600)]
+    public int MethodMenuTimeoutSeconds { get; set; } = 5;
+
+    /// <summary>
+    /// Console resolution like <c>"1024x768"</c> or <c>"800x600"</c>. When
+    /// set, iPXE emits <c>console --x W --y H</c> at the top of the script
+    /// to switch the framebuffer to that mode. Gives the menu more rows /
+    /// columns than the default 80x25 text mode. Stock iPXE supports this
+    /// on UEFI (GOP) and BIOS (VESA). Leave null to keep firmware default.
+    /// </summary>
+    public string? ConsoleResolution { get; set; }
+
+    /// <summary>
+    /// Filename of a PCX-format image dropped into <c>data/tftp/</c> to use
+    /// as the menu background (text renders on top). The script emits
+    /// <c>console --picture http://server/files/&lt;name&gt;</c>. Requires a
+    /// custom iPXE build with <c>CONSOLE_PCX</c> compiled in — not in the
+    /// stock binaries. Leave null to skip.
+    /// </summary>
+    public string? BackgroundImage { get; set; }
 }

@@ -32,7 +32,9 @@ internal sealed class BootCatalog : IDisposable
     private readonly ILogger<BootCatalog> _logger;
     private readonly IsoInspector _inspector;
     private readonly Lock _gate = new();
+    private readonly Lock _rescanLock = new();
     private readonly FileSystemWatcher _watcher;
+    private readonly Timer? _periodicRescan;
     private IReadOnlyList<IsoEntry> _entries = Array.Empty<IsoEntry>();
     private CancellationTokenSource? _debounceCts;
     private bool _disposed;
@@ -64,6 +66,28 @@ internal sealed class BootCatalog : IDisposable
         _watcher.Renamed += (_, _) => DebouncedRescan();
         _watcher.Changed += (_, _) => DebouncedRescan();
         _watcher.Error += (_, e) => _logger.LogError(e.GetException(), "ISO watcher error");
+
+        // Periodic safety-net rescan - catches changes when the watcher misses
+        // events (network mounts, Docker bind-mounts, some FUSE filesystems).
+        var intervalSeconds = options.Value.CatalogRescanIntervalSeconds;
+        if (intervalSeconds > 0)
+        {
+            var effectiveSeconds = Math.Max(5, intervalSeconds);
+            var interval = TimeSpan.FromSeconds(effectiveSeconds);
+            _periodicRescan = new Timer(_ => DebouncedRescan(), null, interval, interval);
+            _logger.LogInformation("Catalog periodic rescan: every {Seconds}s", effectiveSeconds);
+        }
+    }
+
+    /// <summary>
+    /// Trigger a synchronous rescan immediately (skipping the debounce). Used
+    /// by the web UI's "Refresh" button.
+    /// </summary>
+    public void ForceRescan()
+    {
+        Interlocked.Exchange(ref _debounceCts, null)?.Cancel();
+        _logger.LogInformation("Catalog force rescan requested");
+        Rescan();
     }
 
     public IReadOnlyList<IsoEntry> Entries
@@ -110,8 +134,26 @@ internal sealed class BootCatalog : IDisposable
 
     private void Rescan()
     {
+        lock (_rescanLock)
+        {
+            RescanCore();
+        }
+    }
+
+    /// <summary>
+    /// iPXE menu labels we use ourselves - block these so an ISO can't be
+    /// assigned one and break the script (label uniqueness within the script,
+    /// item-id uniqueness within a menu).
+    /// </summary>
+    private static readonly string[] ReservedSlugs =
+    {
+        "start", "cancel", "shell", "reboot", "exit", "bootfail", "methodfail",
+    };
+
+    private void RescanCore()
+    {
         var entries = new List<IsoEntry>();
-        var usedSlugs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var usedSlugs = new HashSet<string>(ReservedSlugs, StringComparer.OrdinalIgnoreCase);
 
         var files = Directory.EnumerateFiles(IsoDirectory, "*", SearchOption.TopDirectoryOnly)
             .Where(p => ImageExtensions.Contains(Path.GetExtension(p), StringComparer.OrdinalIgnoreCase));
@@ -240,6 +282,7 @@ internal sealed class BootCatalog : IDisposable
         }
         _disposed = true;
         _debounceCts?.Cancel();
+        _periodicRescan?.Dispose();
         _watcher.Dispose();
     }
 }
