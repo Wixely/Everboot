@@ -189,7 +189,7 @@ internal sealed class BootConfigGenerator
     private void EmitMethodSubmenu(StringBuilder sb, IsoEntry entry)
     {
         var slug = entry.Slug;
-        var hasDirect = HasDirectBoot(entry);
+        var recipes = GetApplicableRecipes(entry);
         var isWin = entry.Metadata.IsModernWindows;
         var iscsiOn = _options.Iscsi.Enabled;
 
@@ -209,11 +209,15 @@ internal sealed class BootConfigGenerator
         sb.AppendLine("item --gap -- ------------ Boot methods ------------");
         sb.AppendLine($"item --key a {slug}-auto      Auto (recommended)");
 
-        if (hasDirect)
+        // One menu item per applicable direct-boot recipe. Hotkey 'd' goes
+        // to the first recipe; further recipes are arrow-navigable.
+        for (var i = 0; i < recipes.Count; i++)
         {
-            var p = entry.Metadata.Profile!.DisplayName;
-            sb.AppendLine($"item --key d {slug}-direct    Direct kernel boot ({p})");
+            var recipe = recipes[i];
+            var keyArg = i == 0 ? "--key d " : string.Empty;
+            sb.AppendLine($"item {keyArg}{slug}-direct-{recipe.Id}    Direct kernel boot ({recipe.DisplayName})");
         }
+
         if (isWin)
         {
             sb.AppendLine($"item --key w {slug}-wimboot   wimboot (load Windows PE)");
@@ -234,6 +238,35 @@ internal sealed class BootConfigGenerator
         sb.AppendLine($"choose --default {slug}-auto --timeout {methodTimeoutMs} method && goto ${{method}} || goto start");
     }
 
+    /// <summary>
+    /// Filter the profile's recipes down to ones we can actually emit for
+    /// this entry - i.e. any that don't reference <c>{squashfs}</c>, or that
+    /// do but a squashfs path was discovered at scan time.
+    /// </summary>
+    private static IReadOnlyList<DirectBootRecipe> GetApplicableRecipes(IsoEntry entry)
+    {
+        if (entry.Metadata.IsModernWindows)
+        {
+            return Array.Empty<DirectBootRecipe>();
+        }
+        var profile = entry.Metadata.Profile;
+        if (profile is null || profile.DirectBoots.Length == 0)
+        {
+            return Array.Empty<DirectBootRecipe>();
+        }
+        var hasSquashfs = !string.IsNullOrEmpty(entry.Metadata.Squashfs);
+        var result = new List<DirectBootRecipe>();
+        foreach (var recipe in profile.DirectBoots)
+        {
+            if (recipe.KernelArgs.Contains("{squashfs}", StringComparison.Ordinal) && !hasSquashfs)
+            {
+                continue;
+            }
+            result.Add(recipe);
+        }
+        return result;
+    }
+
     // -----------------------------------------------------------------
     // Method bodies - the actual boot logic for each chosen method.
     // -----------------------------------------------------------------
@@ -241,7 +274,7 @@ internal sealed class BootConfigGenerator
     private void EmitMethodBodies(StringBuilder sb, string authority, IsoEntry entry)
     {
         var slug = entry.Slug;
-        var hasDirect = HasDirectBoot(entry);
+        var recipes = GetApplicableRecipes(entry);
         var isWin = entry.Metadata.IsModernWindows;
         var iscsiOn = _options.Iscsi.Enabled;
 
@@ -254,10 +287,10 @@ internal sealed class BootConfigGenerator
             sb.AppendLine($"echo Auto: wimboot (modern Windows detected)");
             sb.AppendLine($"goto {slug}-wimboot");
         }
-        else if (hasDirect)
+        else if (recipes.Count > 0)
         {
-            sb.AppendLine($"echo Auto: direct kernel boot ({entry.Metadata.Profile!.DisplayName} profile)");
-            sb.AppendLine($"goto {slug}-direct");
+            sb.AppendLine($"echo Auto: direct kernel boot ({recipes[0].DisplayName})");
+            sb.AppendLine($"goto {slug}-direct-{recipes[0].Id}");
         }
         else if (entry.IsLikelyFloppy)
         {
@@ -270,12 +303,13 @@ internal sealed class BootConfigGenerator
             sb.AppendLine($"goto {slug}-sanhttp");
         }
 
-        if (hasDirect)
+        // One method body per direct-boot recipe.
+        foreach (var recipe in recipes)
         {
             sb.AppendLine();
-            sb.AppendLine($":{slug}-direct");
+            sb.AppendLine($":{slug}-direct-{recipe.Id}");
             sb.AppendLine($"set last-method-menu {slug}");
-            EmitDirectKernelBody(sb, authority, entry);
+            EmitDirectKernelBody(sb, authority, entry, recipe);
         }
 
         if (isWin)
@@ -333,19 +367,18 @@ internal sealed class BootConfigGenerator
         sb.AppendLine($"goto {slug}");
     }
 
-    private static void EmitDirectKernelBody(StringBuilder sb, string authority, IsoEntry entry)
+    private static void EmitDirectKernelBody(StringBuilder sb, string authority, IsoEntry entry, DirectBootRecipe recipe)
     {
-        var profile = entry.Metadata.Profile!;
-        var direct = profile.DirectBoot!;
-
-        var args = direct.KernelArgs
+        var squashfs = entry.Metadata.Squashfs ?? string.Empty;
+        var args = recipe.KernelArgs
             .Replace("{server}", authority, StringComparison.Ordinal)
             .Replace("{slug}", entry.Slug, StringComparison.Ordinal)
-            .Replace("{file}", Uri.EscapeDataString(entry.FileName), StringComparison.Ordinal);
+            .Replace("{file}", Uri.EscapeDataString(entry.FileName), StringComparison.Ordinal)
+            .Replace("{squashfs}", EncodePath(squashfs), StringComparison.Ordinal);
 
-        sb.AppendLine($"echo Direct kernel boot via {profile.DisplayName} profile");
-        sb.AppendLine($"kernel http://{authority}/iso/{entry.Slug}/{EncodePath(direct.KernelPath)} {args} || goto methodfail");
-        sb.AppendLine($"initrd http://{authority}/iso/{entry.Slug}/{EncodePath(direct.InitrdPath)} || goto methodfail");
+        sb.AppendLine($"echo Direct kernel boot - recipe: {recipe.DisplayName}");
+        sb.AppendLine($"kernel http://{authority}/iso/{entry.Slug}/{EncodePath(recipe.KernelPath)} {args} || goto methodfail");
+        sb.AppendLine($"initrd http://{authority}/iso/{entry.Slug}/{EncodePath(recipe.InitrdPath)} || goto methodfail");
         sb.AppendLine("boot || goto methodfail");
     }
 
@@ -431,7 +464,7 @@ internal sealed class BootConfigGenerator
     // -----------------------------------------------------------------
 
     private static bool HasDirectBoot(IsoEntry entry) =>
-        entry.Metadata.Profile?.DirectBoot is not null && !entry.Metadata.IsModernWindows;
+        entry.Metadata.Profile is { DirectBoots.Length: > 0 } && !entry.Metadata.IsModernWindows;
 
     private static string LabelTag(IsoEntry entry)
     {

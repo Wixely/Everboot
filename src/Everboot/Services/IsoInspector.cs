@@ -46,7 +46,8 @@ internal sealed record IsoMetadata(
     WindowsBootEra WindowsEra,
     WindowsBootFiles? WindowsFiles,
     DistroProfile? Profile,
-    string? VolumeLabel)
+    string? VolumeLabel,
+    string? Squashfs)
 {
     public bool IsModernWindows => WindowsEra == WindowsBootEra.Modern && WindowsFiles is not null;
 }
@@ -111,6 +112,7 @@ internal sealed class IsoInspector
         WindowsBootFiles? winFiles = null;
         DistroProfile? profile = null;
         string? volumeLabel = null;
+        string? squashfs = null;
 
         try
         {
@@ -148,7 +150,7 @@ internal sealed class IsoInspector
                 // don't carry ISO9660/UDF - they will fall through to sanboot,
                 // which is the right behaviour for them.
                 _logger.LogDebug("{Path} matched neither ISO9660 nor UDF; treating as raw image", isoPath);
-                return new IsoMetadata(IsoLayout.None, WindowsBootEra.None, null, null, null);
+                return new IsoMetadata(IsoLayout.None, WindowsBootEra.None, null, null, null, null);
             }
 
             // Prefer ISO9660+Joliet for Windows boot file probing - boot.wim etc. live
@@ -166,6 +168,23 @@ internal sealed class IsoInspector
                 profile = DistroProfiles.Match(
                     volumeLabel,
                     path => IsoFileResolver.Resolve(fs, path) is not null);
+
+                if (profile is { SquashfsDir: not null, SquashfsPattern: not null })
+                {
+                    squashfs = FindLargestMatchingFile(fs, profile.SquashfsDir, profile.SquashfsPattern);
+                    if (squashfs is not null)
+                    {
+                        _logger.LogInformation(
+                            "{File}: discovered squashfs at {Sub}",
+                            Path.GetFileName(isoPath), squashfs);
+                    }
+                    else
+                    {
+                        _logger.LogDebug(
+                            "{File}: squashfs probe '{Dir}/{Pattern}' found nothing",
+                            Path.GetFileName(isoPath), profile.SquashfsDir, profile.SquashfsPattern);
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -179,10 +198,141 @@ internal sealed class IsoInspector
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Could not inspect {Path}", isoPath);
-            return new IsoMetadata(IsoLayout.None, WindowsBootEra.None, null, null, null);
+            return new IsoMetadata(IsoLayout.None, WindowsBootEra.None, null, null, null, null);
         }
 
-        return new IsoMetadata(layout, era, winFiles, profile, volumeLabel);
+        return new IsoMetadata(layout, era, winFiles, profile, volumeLabel, squashfs);
+    }
+
+    /// <summary>
+    /// Find the largest file under <paramref name="directory"/> whose name
+    /// matches the glob (<c>*.squashfs</c> / <c>*.img</c>). Returned path uses
+    /// forward slashes and is relative to the ISO root. Tries a few common
+    /// case variants of the directory.
+    /// </summary>
+    /// <summary>
+    /// Well-known filenames we expect to find for each glob, in priority order.
+    /// Checked first via the existing case-insensitive <see cref="IsoFileResolver"/>
+    /// before falling back to directory enumeration.
+    /// </summary>
+    private static readonly Dictionary<string, string[]> WellKnownNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["*.squashfs"] = new[]
+        {
+            "filesystem.squashfs",
+            "minimal.squashfs",
+            "minimal.standard.squashfs",
+            "ubuntu-server-minimal.squashfs",
+        },
+        ["*.img"] = new[]
+        {
+            "squashfs.img",
+            "rootfs.img",
+        },
+    };
+
+    private static string? FindLargestMatchingFile(DiscFileSystem fs, string directory, string pattern)
+    {
+        // 1. Fast path - try well-known filenames first via the resolver we
+        //    already know works (this is what the HTTP /iso route uses).
+        if (WellKnownNames.TryGetValue(pattern, out var knownNames))
+        {
+            foreach (var name in knownNames)
+            {
+                var probe = directory.TrimEnd('/', '\\') + "/" + name;
+                var resolved = IsoFileResolver.Resolve(fs, probe);
+                if (resolved is not null)
+                {
+                    return resolved.Replace('\\', '/').TrimStart('/');
+                }
+            }
+        }
+
+        // 2. Fallback - case-insensitive directory walk + glob enumeration
+        //    for layouts where the filename isn't on our well-known list.
+        var parts = directory.Replace('/', '\\').Trim('\\').Split('\\');
+        var current = "\\";
+        foreach (var part in parts)
+        {
+            string[] dirs;
+            try
+            {
+                dirs = fs.GetDirectories(current);
+            }
+            catch
+            {
+                return null;
+            }
+            string? match = null;
+            foreach (var d in dirs)
+            {
+                var leaf = d.TrimEnd('\\', '/').Split('\\', '/')[^1];
+                if (string.Equals(leaf, part, StringComparison.OrdinalIgnoreCase))
+                {
+                    match = d;
+                    break;
+                }
+            }
+            if (match is null)
+            {
+                return null;
+            }
+            current = match;
+        }
+
+        return SearchDirForLargest(fs, current, pattern);
+    }
+
+    private static string? SearchDirForLargest(DiscFileSystem fs, string directory, string pattern)
+    {
+        string[] files;
+        try
+        {
+            files = fs.GetFiles(directory);
+        }
+        catch
+        {
+            return null;
+        }
+
+        string? bestPath = null;
+        long bestSize = -1;
+        foreach (var file in files)
+        {
+            var name = file.Split('\\', '/')[^1];
+            if (!MatchesGlob(name, pattern))
+            {
+                continue;
+            }
+            long size;
+            try
+            {
+                size = fs.GetFileLength(file);
+            }
+            catch
+            {
+                continue;
+            }
+            if (size > bestSize)
+            {
+                bestSize = size;
+                bestPath = file;
+            }
+        }
+        if (bestPath is null)
+        {
+            return null;
+        }
+        return bestPath.Replace('\\', '/').TrimStart('/');
+    }
+
+    private static bool MatchesGlob(string name, string pattern)
+    {
+        if (pattern.StartsWith("*.", StringComparison.Ordinal))
+        {
+            return name.EndsWith(pattern[1..], StringComparison.OrdinalIgnoreCase);
+        }
+        return string.Equals(name, pattern, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string? TryReadVolumeLabel(DiscFileSystem fs)

@@ -294,9 +294,19 @@ internal sealed class HttpFileService : BackgroundService
                     ? "<span class=\"no\">none</span>"
                     : (m.WindowsEra == WindowsBootEra.Modern ? "<span class=\"yes\">Modern</span>" : $"<span class=\"warn\">{m.WindowsEra}</span>");
 
-                var directBootCell = m.Profile?.DirectBoot is { } db
-                    ? $"<span class=\"yes\">yes</span><br><small><code>{WebUtility.HtmlEncode(db.KernelPath)}</code></small>"
-                    : "<span class=\"no\">no</span>";
+                string directBootCell;
+                if (m.Profile is { DirectBoots.Length: > 0 } pdb && !m.IsModernWindows)
+                {
+                    var recipeIds = string.Join(", ", pdb.DirectBoots.Select(r => WebUtility.HtmlEncode(r.Id)));
+                    var squashfsLine = m.Squashfs is null
+                        ? string.Empty
+                        : $"<br><small>squashfs: <code>{WebUtility.HtmlEncode(m.Squashfs)}</code></small>";
+                    directBootCell = $"<span class=\"yes\">{pdb.DirectBoots.Length} recipe(s)</span><br><small>{recipeIds}</small>{squashfsLine}";
+                }
+                else
+                {
+                    directBootCell = "<span class=\"no\">no</span>";
+                }
 
                 var floppyCell = entry.IsLikelyFloppy ? "<span class=\"yes\">yes</span>" : "<span class=\"no\">no</span>";
 
