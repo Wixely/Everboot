@@ -22,10 +22,10 @@ internal enum WindowsBootEra
     /// <summary>Vista+ (boot.wim + bootmgr / bootmgfw.efi). wimboot-able.</summary>
     Modern,
     /// <summary>XP / 2000 / Server 2003 / NT (i386\\setupldr.bin). PXE-bootable
-    /// only via sanboot, and even then unreliable.</summary>
+    /// with OS network-storage support required after firmware handoff.</summary>
     XpClass,
     /// <summary>Windows 95 / 98 / ME (WIN9x\\SETUP.EXE). Not PXE-bootable
-    /// directly - needs a DOS bring-up first.</summary>
+    /// via UEFI; experimental BIOS boot needs compatible DOS CD access.</summary>
     NinexClass,
 }
 

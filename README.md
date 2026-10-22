@@ -63,6 +63,42 @@ exclude HTTP kernel/initrd transfers, and update when the page is reloaded.
   encryption, like the existing HTTP image catalog. Do not replace an ISO during
   an active boot. No local target disk is written by the streaming service.
 
+### Legacy operating systems
+
+Legacy support is experimental; **no DOS, Windows 9x, or XP boot has yet been
+verified**. Selecting an image still chooses a method automatically. Windows 9x
+is no longer blocked from attempting boot, and NT/2000/XP media retains the SAN
+path. These Windows paths require BIOS/CSM; UEFI clients receive an explanation
+before downloading the image. Nonbootable installation CDs still need separate
+boot media; detecting setup files does not make a CD bootable.
+
+HTTP and iSCSI ISO boot uses CD drive `0xe0`, keeping the local hard-disk number
+available. Raw disk images use `0x80`. The RAM fallback now distinguishes ISO,
+floppy, and hard-disk images and rejects UEFI before downloading. Small DOS
+floppies can use this fallback without reserving RAM for a full installation CD.
+It still loads the entire selected floppy into RAM.
+
+| OS/media | Current path | What remains |
+| --- | --- | --- |
+| DOS boot floppy | BIOS MEMDISK floppy | Real boot and conventional-memory checks |
+| Bootable DOS/9x CD | BIOS HTTP/iSCSI SAN attempt | Compatible BIOS/El Torito DOS CD driver and access after boot |
+| NT/2000/XP/2003 | BIOS SAN attempt | OS-specific NIC/storage integration; unmodified setup can lose the source after handoff |
+| Older Linux | Detected kernel/initrd recipe or SAN attempt | Distribution-specific initramfs network/NFS support; NFSv2-only clients are unsupported |
+
+Firmware disk hooks are not a universal OS storage driver. DOS/9x can use BIOS
+disk access, while protected-mode native drivers may bypass it. Everboot's SMB2
+server is not a source for stock SMB1-only DOS/9x/XP clients. See the primary
+[MEMDISK compatibility notes](https://wiki.syslinux.org/wiki/index.php?title=MEMDISK)
+and [iPXE SAN boot documentation](https://ipxe.org/cmd/sanboot).
+
+A generic path across those driver boundaries would need persistent virtual
+hardware (for example a local VM with a streamed IDE CD/disk), or individual
+native OS drivers. A VM appliance is an architecture option, **not implemented
+or selected by this branch**. Owner: maintainer. Next validation: boot freely
+redistributable DOS media in a BIOS VM, confirm subsequent CD file reads, then
+test user-supplied licensed Windows media through protected-mode handoff.
+Reviewed: **2026-10-22**.
+
 ### Configuration and deployment
 
 NFS defaults to TCP **111** (portmapper v2), **2049** (NFSv3), and **20048**

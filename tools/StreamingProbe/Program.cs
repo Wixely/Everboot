@@ -51,6 +51,31 @@ try
     config.Iscsi.UseForSanboot = true; config.Iscsi.Port = 33260;
     Check(generator.GenerateIpxeMenu("192.0.2.1:8080").Contains("iscsi:192.0.2.1::33260::"), "iSCSI port included and handoff not suppressed");
 
+    // Synthetic legacy media validates routing, not successful OS boot.
+    var legacy = new CDBuilder { UseJoliet = true, VolumeIdentifier = "Legacy Test" };
+    legacy.AddFile("win98/setup.exe", new byte[16]);
+    legacy.Build(Path.Combine(root, "isos", "win98.iso"));
+    var xp = new CDBuilder { UseJoliet = true, VolumeIdentifier = "XP Test" };
+    xp.AddFile("i386/setupldr.bin", new byte[16]);
+    xp.Build(Path.Combine(root, "isos", "xp.iso"));
+    File.WriteAllBytes(Path.Combine(root, "isos", "dos.img"), new byte[1440 * 1024]);
+    using (var disk = File.Create(Path.Combine(root, "isos", "disk.img"))) disk.SetLength(8 * 1024 * 1024);
+    catalog.ForceRescan();
+    menu = generator.GenerateIpxeMenu("192.0.2.1:8080");
+    string Method(string label) => menu.Replace("\r\n", "\n", StringComparison.Ordinal).Split(":" + label + "\n", StringSplitOptions.None)[1].Split("\n:", StringSplitOptions.None)[0];
+    Check(catalog.Entries.Single(e => e.Slug == "win98").Metadata.WindowsEra == WindowsBootEra.NinexClass, "9x fixture detected");
+    Check(Method("win98-auto").Contains("goto win98-saniscsi"), "9x has a one-selection compatibility attempt");
+    Check(Method("win98-sanhttp").Contains("iseq ${platform} pcbios || goto win98-needs-bios"), "9x HTTP path requires BIOS");
+    Check(Method("xp-saniscsi").Contains("iseq ${platform} pcbios || goto xp-needs-bios"), "XP iSCSI path requires BIOS");
+    Check(Method("win98-sanhttp").Contains("sanboot --drive 0xe0 --no-describe"), "ISO occupies CD drive instead of local hard disk number");
+    Check(Method("disk-sanhttp").Contains("sanboot --drive 0x80 --no-describe"), "raw hard disk retains BIOS boot drive number");
+    Check(Method("dos-memdisk").Contains("memdisk floppy raw"), "DOS floppy is not misrepresented as an ISO");
+    Check(Method("disk-memdisk").Contains("memdisk harddisk raw"), "large raw disk uses harddisk mode");
+    Check(Method("win98-memdisk").Contains("memdisk iso raw"), "ISO retains MEMDISK ISO mode");
+    Check(Method("dos-memdisk").IndexOf("iseq ${platform} pcbios", StringComparison.Ordinal) < Method("dos-memdisk").IndexOf("kernel http", StringComparison.Ordinal), "MEMDISK rejects UEFI before downloading");
+    Check(menu.Contains("Everboot SMB2 shares cannot be used by stock DOS/9x"), "legacy share limitation explained");
+    Check(menu.Split('\n').Where(l => l.StartsWith(':')).GroupBy(l => l.Trim()).All(g => g.Count() == 1), "legacy methods have unique labels");
+
     var pmap = Call(100000, 3, w => { w.U(100003); w.U(3); w.U(6); w.U(0); }, 2);
     Check(pmap.U() == 32049, "portmapper TCP mapping");
     pmap = Call(100000, 3, w => { w.U(100003); w.U(3); w.U(17); w.U(0); }, 2);
