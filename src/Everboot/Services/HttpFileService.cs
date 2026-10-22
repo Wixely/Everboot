@@ -125,6 +125,20 @@ internal sealed class HttpFileService : BackgroundService
                 return;
             }
 
+            if (path == "/catalog.json")
+            {
+                var images = _catalog.Entries.Select(e => new Vm.VmImage(e.DisplayName,
+                    "/isos/" + Uri.EscapeDataString(e.FileName), e.SizeBytes,
+                    e.Metadata.WindowsEra == WindowsBootEra.XpClass ? "classic" :
+                    e.Metadata.IsModernWindows || e.Metadata.Profile?.Family is DistroFamily.LinuxLive or DistroFamily.LinuxInstaller ? "modern" : "legacy"));
+                var bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(images);
+                response.ContentType = "application/json; charset=utf-8";
+                response.Headers["Cache-Control"] = "no-store";
+                response.ContentLength64 = bytes.Length;
+                if (request.HttpMethod != "HEAD") await response.OutputStream.WriteAsync(bytes, stoppingToken);
+                return;
+            }
+
             if (path is "/diagnose" or "/diagnose.html")
             {
                 await WriteDiagnoseAsync(response, stoppingToken).ConfigureAwait(false);

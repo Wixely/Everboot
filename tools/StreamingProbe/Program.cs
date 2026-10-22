@@ -6,6 +6,8 @@ using DiscUtils.Iso9660;
 using Everboot.Configuration;
 using Everboot.Services;
 using Everboot.Services.Nfs;
+using Everboot.Services.Vm;
+using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
@@ -185,6 +187,57 @@ try
             using var range = await client.SendAsync(request);
             Check(range.StatusCode == HttpStatusCode.PartialContent && (await range.Content.ReadAsByteArrayAsync()).SequenceEqual(payload.Skip(2047).Take(3000)), "HTTP range and NFS expose identical ISO content");
             Check((await client.GetStringAsync("/boot.ipxe")).Contains("netboot=nfs"), "HTTP serves streaming menu");
+            var vmImages = JsonSerializer.Deserialize<VmImage[]>(await client.GetStringAsync("/catalog.json"))!;
+            Check(vmImages.Length == catalog.Entries.Count && vmImages.All(i => i.Path.StartsWith("/isos/")), "VM catalog exposes relative media paths without server filesystem paths");
+            Check(vmImages.Single(i => i.Path == "/isos/win98.iso").Profile == "legacy" && vmImages.Single(i => i.Path == "/isos/xp.iso").Profile == "classic", "legacy VM presets selected automatically");
+            var vmImage = vmImages.Single(i => i.Path == "/isos/ubuntu.iso");
+            var media = QemuLaunch.MediaUri(client.BaseAddress!, vmImage);
+            await QemuLaunch.CheckRangeAsync(client, media, vmImage.Size, default);
+            Check(true, "QEMU preflight validates real HTTP range response");
+            try { await QemuLaunch.CheckRangeAsync(client, media, vmImage.Size + 1, default); throw new Exception("changed media accepted"); }
+            catch (IOException) { checks++; }
+            try { QemuLaunch.MediaUri(client.BaseAddress!, vmImage with { Path = "//example.org/image.iso" }); throw new Exception("foreign media accepted"); }
+            catch (ArgumentException) { checks++; }
+            using var bridge = new HttpBlockBridge(media, vmImage.Size);
+            using (var nbd = new TcpClient())
+            {
+                await nbd.ConnectAsync(IPAddress.Loopback, bridge.Port);
+                var stream = nbd.GetStream();
+                var hello = new byte[152]; await stream.ReadExactlyAsync(hello);
+                Check(BinaryPrimitives.ReadUInt64BigEndian(hello) == 0x4e42444d41474943 &&
+                    BinaryPrimitives.ReadUInt64BigEndian(hello.AsSpan(16)) == (ulong)vmImage.Size &&
+                    BinaryPrimitives.ReadUInt32BigEndian(hello.AsSpan(24)) == 3, "NBD handshake advertises exact size and read-only flag");
+                var command = new byte[28];
+                BinaryPrimitives.WriteUInt32BigEndian(command, 0x25609513);
+                BinaryPrimitives.WriteUInt64BigEndian(command.AsSpan(8), 123);
+                BinaryPrimitives.WriteUInt64BigEndian(command.AsSpan(16), 2047);
+                BinaryPrimitives.WriteUInt32BigEndian(command.AsSpan(24), 4096);
+                await stream.WriteAsync(command);
+                var reply = new byte[16]; await stream.ReadExactlyAsync(reply);
+                var content = new byte[4096]; await stream.ReadExactlyAsync(content);
+                var expected = new byte[4096]; using (var source = File.OpenRead(isoPath)) { source.Position = 2047; source.ReadExactly(expected); }
+                Check(BinaryPrimitives.ReadUInt32BigEndian(reply) == 0x67446698 && BinaryPrimitives.ReadUInt32BigEndian(reply.AsSpan(4)) == 0 &&
+                    BinaryPrimitives.ReadUInt64BigEndian(reply.AsSpan(8)) == 123 && content.SequenceEqual(expected), "NBD random read matches ISO bytes across sector boundaries");
+                BinaryPrimitives.WriteUInt16BigEndian(command.AsSpan(6), 1);
+                BinaryPrimitives.WriteUInt32BigEndian(command.AsSpan(24), 512);
+                await stream.WriteAsync(command); await stream.WriteAsync(new byte[512]); await stream.ReadExactlyAsync(reply);
+                Check(BinaryPrimitives.ReadUInt32BigEndian(reply.AsSpan(4)) == 1, "NBD writes rejected and payload drained");
+                BinaryPrimitives.WriteUInt16BigEndian(command.AsSpan(6), 0);
+                BinaryPrimitives.WriteUInt64BigEndian(command.AsSpan(16), ulong.MaxValue);
+                await stream.WriteAsync(command); await stream.ReadExactlyAsync(reply);
+                Check(BinaryPrimitives.ReadUInt32BigEndian(reply.AsSpan(4)) == 22, "NBD overflowing offset rejected");
+                BinaryPrimitives.WriteUInt32BigEndian(command.AsSpan(24), uint.MaxValue);
+                await stream.WriteAsync(command);
+                Check(await stream.ReadAsync(reply) == 0, "NBD oversized request closes connection without allocation");
+            }
+            using var block = JsonDocument.Parse(bridge.Block);
+            Check(block.RootElement.GetProperty("file").GetProperty("driver").GetString() == "nbd" && block.RootElement.GetProperty("read-only").GetBoolean(), "media uses read-only local NBD bridge");
+            var vmArgs = QemuLaunch.Arguments(bridge.Block, "legacy", "disk,with spaces.qcow2", true, false);
+            Check(vmArgs.Contains("ide-cd,drive=media,bus=ide.1,unit=0") && vmArgs.Contains("128") && vmArgs.Contains("none"), "legacy VM has IDE CD and small RAM preset");
+            var vmCommand = QemuLaunch.Command("qemu", vmArgs);
+            Check(!vmCommand.UseShellExecute && vmCommand.ArgumentList.Contains(vmArgs[vmArgs.IndexOf("-blockdev") + 1]), "QEMU arguments bypass shell expansion");
+            var vmHtml = VmClient.Html([vmImage with { Name = "<script>alert(1)</script>" }], "test-token", "<error>", 1);
+            Check(!vmHtml.Contains("<script>") && vmHtml.Contains("&lt;error&gt;") && vmHtml.Contains(" disabled"), "VM library encodes remote names and disables duplicate launches");
         }
         finally { await http.StopAsync(default); }
     }

@@ -26,6 +26,18 @@ licenses; full license text for each can be retrieved from the linked source.
 - Copyright (c) Quamotion and DiscUtils contributors.
 - License: MIT — https://github.com/DiscUtils/DiscUtils/blob/develop/LICENSE.txt
 
+## QEMU (optional, not bundled)
+
+- The experimental VM client invokes a separately installed QEMU executable.
+- QEMU is principally GPL-2.0, with component-specific licenses for firmware and
+  libraries. Upstream licensing: https://www.qemu.org/docs/master/about/license.html
+- No QEMU binaries, firmware, or guest OS images are committed or redistributed
+  by this project. Local test downloads under `artifacts/` are ignored.
+- Validation used Ubuntu QEMU 8.2.2 and the Windows 11.1.0 build from
+  https://qemu.weilnetz.de/w64/qemu-w64-setup-20260811.exe (upstream SHA-512 checked).
+- Future bundled packages must preserve licenses and meet applicable source
+  distribution obligations. Everboot's MIT license does not replace those licenses.
+
 ## wimboot (not bundled)
 
 - Component: `wimboot` — the Windows Imaging loader used by iPXE to boot

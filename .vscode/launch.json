@@ -2,6 +2,25 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": ".NET: QEMU integration checks",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build:vm-probe",
+      "program": "${workspaceFolder}/tools/VmProbe/bin/Debug/net10.0/VmProbe.dll",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": ".NET: QEMU client",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/src/Everboot/bin/Debug/net10.0/Everboot.dll",
+      "args": ["--client", "http://localhost:8080"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
       "name": ".NET: Launch Everboot (Debug)",
       "type": "coreclr",
       "request": "launch",

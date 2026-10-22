@@ -20,6 +20,7 @@ public static class Program
         IHost? host = null;
         try
         {
+            if (args.FirstOrDefault() == "--client") return await Services.Vm.VmClient.RunAsync(args);
             host = BuildHost(args);
 
             var lifetimeLogger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Everboot");

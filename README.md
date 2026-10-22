@@ -65,8 +65,8 @@ exclude HTTP kernel/initrd transfers, and update when the page is reloaded.
 
 ### Legacy operating systems
 
-Legacy support is experimental; **no DOS, Windows 9x, or XP boot has yet been
-verified**. Selecting an image still chooses a method automatically. Windows 9x
+Bare-metal legacy support is experimental; **Windows 9x and XP boots have not
+been verified**. Selecting an image still chooses a method automatically. Windows 9x
 is no longer blocked from attempting boot, and NT/2000/XP media retains the SAN
 path. These Windows paths require BIOS/CSM; UEFI clients receive an explanation
 before downloading the image. Nonbootable installation CDs still need separate
@@ -91,13 +91,100 @@ server is not a source for stock SMB1-only DOS/9x/XP clients. See the primary
 [MEMDISK compatibility notes](https://wiki.syslinux.org/wiki/index.php?title=MEMDISK)
 and [iPXE SAN boot documentation](https://ipxe.org/cmd/sanboot).
 
-A generic path across those driver boundaries would need persistent virtual
-hardware (for example a local VM with a streamed IDE CD/disk), or individual
-native OS drivers. A VM appliance is an architecture option, **not implemented
-or selected by this branch**. Owner: maintainer. Next validation: boot freely
-redistributable DOS media in a BIOS VM, confirm subsequent CD file reads, then
-test user-supplied licensed Windows media through protected-mode handoff.
-Reviewed: **2026-10-22**.
+The QEMU client below supplies persistent virtual hardware across this boundary.
+It is a desktop client, not yet a PXE-bootable VM appliance.
+
+### QEMU streaming client (experimental)
+
+Run the **same executable on the computer that will display the VM**:
+
+```powershell
+.\Everboot.exe --client http://boot-server:8080
+```
+
+The local browser library opens automatically. Click **Start virtual machine**
+beside an image. The launcher detects QEMU beside Everboot in `qemu/`, in its
+usual Windows installation directory, or on PATH. A shortcut containing the
+command above gives repeatable one-click entry to the library. The server address
+is a one-time shortcut setup; no protocol selection is required for each boot.
+
+Install a complete QEMU distribution first; the executable alone is insufficient
+because firmware and supporting libraries are also needed. Windows builds
+are linked from [QEMU's download page](https://www.qemu.org/download/). On Ubuntu,
+install `qemu-system-x86`, `qemu-utils`, and `qemu-system-gui`
+for the desktop window. The latter is unnecessary for the headless probe.
+QEMU is an external process and is not bundled in the release. No runtime download
+or system integration is performed by the launcher.
+
+Optional arguments: `--qemu-dir <folder>`, `--vm-data <folder>`, `--no-browser`.
+The launcher prints its local URL when automatic browser opening is unavailable.
+Keep the launcher console open; close the guest normally before exiting it.
+Ctrl+C stops the library and waits for the guest to close, preserving its stream.
+
+- Everboot reads HTTP ranges into a 64 KiB transfer buffer and supplies a local
+  read-only NBD endpoint to QEMU. This avoids the curl/AIO failure reproduced
+  with Windows QEMU 11.1.0. ISO bytes are presented to the guest as an IDE CD.
+  A range request verifies streaming before launch. The bridge permits eight
+  connections and requests up to 32 MiB, streamed without buffering the request
+  in full. There is no full-image download or persistent read cache.
+- Raw `.img` media use a local QCOW2 overlay over the remote read-only image.
+  Small images use a floppy controller; larger ones use IDE. Source images stay
+  unchanged. ISO boots receive a separate blank, grow-on-write install disk.
+- Presets are DOS/9x (128 MiB RAM, Pentium II, 2 GiB install disk), NT/XP
+  (512 MiB, Pentium III, 8 GiB), and newer systems (2 GiB, qemu64, 32 GiB).
+  All use BIOS, a single emulated CPU, standard VGA and software emulation (TCG).
+  These are compatibility starting points, not verified support for every OS.
+- Virtual disks persist under the current user's local application-data folder,
+  `Everboot/machines`. Server URL, image size and preset select the saved machine.
+  Changing those selects a different disk. Raw overlays have a placeholder
+  backing filename; the launcher reconnects the current stream when opening
+  them. Open them through Everboot, not as standalone QCOW2 files.
+  Back up this directory with guests
+  stopped. Do not replace source media in place, even with same-size images;
+  there is no content hash/version pinning yet.
+- Guest networking is disabled. No physical disks, host shares, clipboard,
+  guest management port or USB devices are passed through in normal client mode.
+  Streaming uses the host's connection and does not depend on guest NIC drivers.
+- The loopback-only launcher uses an unguessable session URL and same-origin POST
+  checks. The server exposes metadata at `/catalog.json`; it cannot issue QEMU
+  commands or choose client filesystem paths. Launches are limited to one guest
+  per launcher instance. Close a VM before launching another.
+- NBD listens only on a randomly selected IPv4 loopback port and exports only
+  the selected image, without writes. It uses the oldstyle NBD handshake supported
+  by the tested QEMU versions, not a general-purpose named-export NBD service.
+
+**Verified 2026-10-22:** FreeDOS 1.4 LiveCD (316,557,312 bytes) reached its DOS
+prompt in QEMU 8.2.2 on Linux (direct HTTP prototype) and QEMU 11.1.0 on Windows
+(the final NBD bridge) with 128 MiB guest RAM and successfully listed the
+streamed CD after OS startup. FreeDOS reported insufficient RAM to preload all
+packages and used the CD filesystem instead. This establishes boot and continued
+media access, not an exhaustive package test or Windows compatibility result.
+The host also needs RAM for QEMU; 128 MiB is the guest allocation, not total host
+memory. The original ISO remains on the server.
+
+The integration suite covers catalog metadata, range preflight, launch arguments
+and HTML escaping. Chromium verified the Start action, running/closed status,
+duplicate-launch disabling, mobile layout, and rejection of cross-origin POSTs.
+Real QEMU NBD reads and overlay persistence passed on Windows
+(QEMU 11.1.0) and Linux (QEMU 8.2.2). `tools/VmProbe` exercises this path:
+
+```powershell
+dotnet run --project tools/VmProbe -c Release
+dotnet run --project tools/VmProbe -c Release -- path/to/freedos.iso
+```
+
+The second command is interactive: `key ret`, `shot /absolute/screen.ppm`,
+`stats`, and `quit`. It uses a temporary local server, a temporary VM disk, and
+a loopback QMP port; it deletes its test tree on exit. Supply your own licensed
+media; no OS images are distributed with Everboot.
+
+Remaining work (owner: maintainer): validate Windows 95/98/ME and NT/2000/XP
+setup through reboot and installation, support pairing nonbootable CDs with
+boot floppies, test network interruption/recovery, and build a small PXE client
+appliance if booting without an existing host OS is required. Recommended next
+step: run a licensed Windows 98 or XP ISO with its corresponding preset and
+verify installation to the virtual disk. Secure Boot, UEFI guests, sound,
+acceleration and unattended installation are not implemented by this client.
 
 ### Configuration and deployment
 
@@ -160,11 +247,12 @@ Compare the hash with the probe's printed expected hash. A Linux system without
 kernel supports NFS's text mount interface. The `--serve` probe listens on loopback.
 
 Verified on 2026-10-22: Release build; self-contained Windows executable startup;
-444 protocol/integration checks on Windows and
+470 protocol/integration checks on Windows and
 Linux under WSL; an independent Linux-kernel NFSv3 mount reading the complete
 12 MiB fixture with an exact SHA-256 match, listing 203 entries, and rejecting a
-write; Chromium desktop/mobile library layout. This is **not** a completed OS boot
-or a measured low-RAM acceptance result.
+write; Chromium desktop/mobile library layout. These NFS checks are **not** a
+completed Linux OS boot or a measured low-RAM acceptance result. The separate
+QEMU/FreeDOS boot validation is documented above.
 
 **Next action (owner: maintainer):** boot a real Debian Live ISO, then an Ubuntu
 ISO, in a disposable VM with less RAM than the ISO size but enough for the distro's
