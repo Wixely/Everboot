@@ -147,7 +147,7 @@ internal sealed class BootCatalog : IDisposable
     /// </summary>
     private static readonly string[] ReservedSlugs =
     {
-        "start", "cancel", "shell", "reboot", "exit", "bootfail", "methodfail",
+        "start", "cancel", "shell", "reboot", "exit", "bootfail", "methodfail", "advanced",
     };
 
     private void RescanCore()

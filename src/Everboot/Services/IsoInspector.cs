@@ -47,7 +47,8 @@ internal sealed record IsoMetadata(
     WindowsBootFiles? WindowsFiles,
     DistroProfile? Profile,
     string? VolumeLabel,
-    string? Squashfs)
+    string? Squashfs,
+    IReadOnlyList<DirectBootRecipe>? AvailableRecipes = null)
 {
     public bool IsModernWindows => WindowsEra == WindowsBootEra.Modern && WindowsFiles is not null;
 }
@@ -113,6 +114,7 @@ internal sealed class IsoInspector
         DistroProfile? profile = null;
         string? volumeLabel = null;
         string? squashfs = null;
+        IReadOnlyList<DirectBootRecipe> availableRecipes = Array.Empty<DirectBootRecipe>();
 
         try
         {
@@ -169,6 +171,13 @@ internal sealed class IsoInspector
                     volumeLabel,
                     path => IsoFileResolver.Resolve(fs, path) is not null);
 
+                // A distro label alone is not enough: never advertise a recipe
+                // whose kernel or initrd is missing from this particular image.
+                availableRecipes = profile?.DirectBoots.Where(recipe =>
+                    IsoFileResolver.Resolve(fs, recipe.KernelPath) is not null &&
+                    IsoFileResolver.Resolve(fs, recipe.InitrdPath) is not null).ToArray()
+                    ?? Array.Empty<DirectBootRecipe>();
+
                 if (profile is { SquashfsDir: not null, SquashfsPattern: not null })
                 {
                     squashfs = FindLargestMatchingFile(fs, profile.SquashfsDir, profile.SquashfsPattern);
@@ -201,7 +210,7 @@ internal sealed class IsoInspector
             return new IsoMetadata(IsoLayout.None, WindowsBootEra.None, null, null, null, null);
         }
 
-        return new IsoMetadata(layout, era, winFiles, profile, volumeLabel, squashfs);
+        return new IsoMetadata(layout, era, winFiles, profile, volumeLabel, squashfs, availableRecipes);
     }
 
     /// <summary>

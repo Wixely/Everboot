@@ -29,6 +29,8 @@ internal sealed class EverbootOptions
 
     public SmbOptions Smb { get; set; } = new();
 
+    public NfsOptions Nfs { get; set; } = new();
+
     public BootMenuOptions Menu { get; set; } = new();
 }
 
@@ -171,6 +173,9 @@ internal sealed class SmbOptions
 
 internal sealed class BootMenuOptions
 {
+    /// <summary>Selecting an image immediately starts its recommended method.</summary>
+    public bool OneClickBoot { get; set; } = true;
+
     public string Title { get; set; } = "Everboot - select an image";
 
     [Range(0, 3600)]
@@ -202,4 +207,21 @@ internal sealed class BootMenuOptions
     /// stock binaries. Leave null to skip.
     /// </summary>
     public string? BackgroundImage { get; set; }
+}
+
+internal sealed class NfsOptions
+{
+    public bool Enabled { get; set; } = true;
+    public string BindAddress { get; set; } = "0.0.0.0";
+    public int Port { get; set; } = 2049;
+    public int MountPort { get; set; } = 20048;
+    public int PortmapperPort { get; set; } = 111;
+    public int MaxConnections { get; set; } = 32;
+
+    public bool IsValid() => !Enabled ||
+        (System.Net.IPAddress.TryParse(BindAddress, out _) &&
+         Port is > 0 and <= 65535 && MountPort is > 0 and <= 65535 &&
+         PortmapperPort is > 0 and <= 65535 &&
+         new[] { Port, MountPort, PortmapperPort }.Distinct().Count() == 3 &&
+         MaxConnections is >= 1 and <= 256);
 }

@@ -2,6 +2,13 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "build:streaming-probe",
+      "type": "process",
+      "command": "dotnet",
+      "args": ["build", "${workspaceFolder}/tools/StreamingProbe/StreamingProbe.csproj"],
+      "problemMatcher": "$msCompile"
+    },
+    {
       "label": "restore",
       "type": "process",
       "command": "dotnet",

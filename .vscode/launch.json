@@ -17,9 +17,19 @@
         "engineLogging": false
       },
       "env": {
+        "DOTNET_ENVIRONMENT": "Development",
         "EVERBOOT_LOG_DIR": "${workspaceFolder}/logs",
         "Everboot__DataDirectory": "${workspaceFolder}/data"
       }
+    },
+    {
+      "name": ".NET: Streaming integration checks",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build:streaming-probe",
+      "program": "${workspaceFolder}/tools/StreamingProbe/bin/Debug/net10.0/StreamingProbe.dll",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
     },
     {
       "name": ".NET: Attach",

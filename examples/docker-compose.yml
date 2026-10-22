@@ -65,9 +65,14 @@ services:
       # Ubuntu / Mint / Pop / Fedora. Default off.
       # Everboot__Iscsi__UseForSanboot: "true"
 
-      # If you'd rather not have the second "(sanboot fallback)" item under
-      # each direct-bootable distro entry, set this to false.
-      # Everboot__Menu__IncludeSanbootFallback: "false"
+      # Experimental streaming branch only: build this branch locally first.
+      # NFS uses TCP 111, 2049, 20048. Change these if host rpcbind/NFS occupies them.
+      # Everboot__Nfs__Enabled: "true"
+      # Everboot__Nfs__Port: "2049"
+      # Everboot__Nfs__MountPort: "20048"
+      # Everboot__Nfs__PortmapperPort: "111"
+      # Set false to restore the per-image method submenu.
+      # Everboot__Menu__OneClickBoot: "false"
 
       # Verbose logging while you're sorting out an issue.
       # Logging__LogLevel__Default: "Debug"

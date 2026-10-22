@@ -6,6 +6,7 @@ using Everboot.Logging;
 using Everboot.Services;
 using Everboot.Services.Iscsi;
 using Everboot.Services.Smb;
+using Everboot.Services.Nfs;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -65,6 +66,7 @@ public static class Program
         builder.Services.AddOptions<EverbootOptions>()
             .Bind(builder.Configuration.GetSection(EverbootOptions.SectionName))
             .ValidateDataAnnotations()
+            .Validate(o => o.Nfs.IsValid(), "NFS requires a numeric bind address, three distinct ports (1-65535), and 1-256 connections.")
             .ValidateOnStart();
 
         builder.Services.AddSingleton<IsoInspector>();
@@ -72,12 +74,14 @@ public static class Program
         builder.Services.AddSingleton<BootConfigGenerator>();
         builder.Services.AddSingleton<IscsiCatalog>();
         builder.Services.AddSingleton<SmbShareCatalog>();
+        builder.Services.AddSingleton<NfsStatus>();
 
         builder.Services.AddHostedService<DhcpProxyService>();
         builder.Services.AddHostedService<TftpService>();
         builder.Services.AddHostedService<HttpFileService>();
         builder.Services.AddHostedService<IscsiService>();
         builder.Services.AddHostedService<SmbService>();
+        builder.Services.AddHostedService<NfsService>();
 
         return builder.Build();
     }

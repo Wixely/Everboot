@@ -9,6 +9,7 @@ using DiscUtils;
 using DiscUtils.Iso9660;
 using DiscUtils.Udf;
 using Everboot.Configuration;
+using Everboot.Services.Nfs;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -29,17 +30,20 @@ internal sealed class HttpFileService : BackgroundService
     private readonly BootCatalog _catalog;
     private readonly BootConfigGenerator _generator;
     private readonly EverbootOptions _options;
+    private readonly NfsStatus _nfsStatus;
 
     public HttpFileService(
         ILogger<HttpFileService> logger,
         BootCatalog catalog,
         BootConfigGenerator generator,
-        IOptions<EverbootOptions> options)
+        IOptions<EverbootOptions> options,
+        NfsStatus nfsStatus)
     {
         _logger = logger;
         _catalog = catalog;
         _generator = generator;
         _options = options.Value;
+        _nfsStatus = nfsStatus;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -117,7 +121,7 @@ internal sealed class HttpFileService : BackgroundService
 
             if (path is "/" or "/index.html")
             {
-                await WriteIndexAsync(response, stoppingToken).ConfigureAwait(false);
+                await WriteIndexAsync(request, response, stoppingToken).ConfigureAwait(false);
                 return;
             }
 
@@ -200,23 +204,27 @@ internal sealed class HttpFileService : BackgroundService
         _logger.LogInformation("Served iPXE menu to {Remote} ({Count} entries)", request.RemoteEndPoint, _catalog.Entries.Count);
     }
 
-    private async Task WriteIndexAsync(HttpListenerResponse response, CancellationToken ct)
+    private async Task WriteIndexAsync(HttpListenerRequest request, HttpListenerResponse response, CancellationToken ct)
     {
         var sb = new StringBuilder();
-        sb.AppendLine("<!doctype html><html><head><meta charset=\"utf-8\"><title>Everboot</title>");
+        sb.AppendLine("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Everboot | Boot library</title>");
         sb.AppendLine("<style>body{font-family:system-ui,sans-serif;max-width:48rem;margin:2rem auto;padding:0 1rem;color:#111}");
         sb.AppendLine("table{border-collapse:collapse;width:100%}th,td{text-align:left;padding:.4rem .6rem;border-bottom:1px solid #ddd}");
         sb.AppendLine("code{background:#f4f4f4;padding:.1rem .3rem;border-radius:3px}");
         sb.AppendLine("button{font:inherit;padding:.4rem .8rem;border:1px solid #999;background:#f4f4f4;border-radius:4px;cursor:pointer}");
-        sb.AppendLine("button:hover{background:#e8e8e8}.toolbar{margin:1rem 0;display:flex;gap:.5rem;align-items:center}</style></head><body>");
-        sb.AppendLine("<h1>Everboot</h1>");
-        sb.AppendLine($"<p>iPXE menu: <code><a href=\"/boot.ipxe\">/boot.ipxe</a></code>. ISO directory: <code>{WebUtility.HtmlEncode(_catalog.IsoDirectory)}</code>.</p>");
+        sb.AppendLine("button:hover{background:#e8e8e8}.toolbar{margin:1rem 0;display:flex;gap:.5rem;align-items:center}</style>");
+        sb.AppendLine("<style>body{max-width:72rem;background:#f5f7fb;color:#18283d;line-height:1.55}h1{font-size:2.8rem;letter-spacing:-.04em;margin:.3rem 0}h2{font-size:1.1rem}a{color:#174ca4}a:focus-visible,button:focus-visible{outline:3px solid #ca7200;outline-offset:3px}.eyebrow{text-transform:uppercase;font-size:.75rem;letter-spacing:.12em;color:#52647d}.summary,.image{background:white;border:1px solid #dbe2ed;border-radius:12px;padding:1.2rem}.summary{margin:1.5rem 0}.library{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:1rem}.image h2{margin:0 0 .4rem;overflow-wrap:anywhere}.muted{color:#52647d;font-size:.9rem}.badge{display:inline-block;border-radius:6px;background:#edf3fc;padding:.2rem .5rem;font-size:.8rem}.toolbar{flex-wrap:wrap}code{overflow-wrap:anywhere}footer{margin:2rem 0;color:#52647d;font-size:.85rem}</style>");
+        sb.AppendLine("</head><body><header><div class=\"eyebrow\">Everboot / Experimental streaming</div><h1>Boot library</h1><p>Add an image here. Network-boot a computer and select it once.</p></header>");
+        var state = !_options.Nfs.Enabled ? "Disabled" : _nfsStatus.Running ? "Listening" : "Starting";
+        sb.AppendLine($"<section class=\"summary\"><h2>Live filesystem streaming</h2><p><strong>NFS: {state}</strong> &middot; {FormatSize(_nfsStatus.BytesRead)} served across {_nfsStatus.Reads:N0} reads since startup.</p><p class=\"muted\">Compatible Linux layouts read files from the original ISO on demand. The kernel, initial boot environment and writable session still use RAM. Keep the server and network available throughout the session.</p><p class=\"muted\">A streaming candidate has the expected files; it is not a verified boot result. Custom kernels and initramfs images must include NFS and network drivers.</p></section>");
+        sb.AppendLine($"<p class=\"muted\">Image folder: <code>{WebUtility.HtmlEncode(_catalog.IsoDirectory)}</code></p>");
 
         sb.AppendLine("<div class=\"toolbar\">");
         sb.AppendLine("  <form method=\"post\" action=\"/refresh\" style=\"display:inline;margin:0\">");
         sb.AppendLine("    <button type=\"submit\">Refresh catalog</button>");
         sb.AppendLine("  </form>");
         sb.AppendLine("  <a href=\"/diagnose\">Diagnose detection</a>");
+        sb.AppendLine("  <a href=\"/boot.ipxe\">View boot script</a>");
         sb.AppendLine("</div>");
 
         var entries = _catalog.Entries;
@@ -226,23 +234,25 @@ internal sealed class HttpFileService : BackgroundService
         }
         else
         {
-            sb.AppendLine("<table><thead><tr><th>Name</th><th>Size</th><th>Download</th></tr></thead><tbody>");
+            sb.AppendLine("<div class=\"library\">");
             foreach (var entry in entries)
             {
                 var url = $"/isos/{Uri.EscapeDataString(entry.FileName)}";
-                sb.Append("<tr><td>").Append(WebUtility.HtmlEncode(entry.DisplayName)).Append("</td>")
-                  .Append("<td>").Append(FormatSize(entry.SizeBytes)).Append("</td>")
-                  .Append("<td><a href=\"").Append(url).Append("\">").Append(WebUtility.HtmlEncode(entry.FileName)).AppendLine("</a></td></tr>");
+                sb.Append("<article class=\"image\"><h2>").Append(WebUtility.HtmlEncode(entry.DisplayName)).Append("</h2>")
+                  .Append("<p class=\"muted\">").Append(FormatSize(entry.SizeBytes)).Append(" &middot; ")
+                  .Append(WebUtility.HtmlEncode(entry.Metadata.Profile?.DisplayName ?? "Other image")).Append("</p>")
+                  .Append("<p class=\"badge\">").Append(WebUtility.HtmlEncode(_generator.BootSummary(entry))).Append("</p>")
+                  .Append("<p><a href=\"").Append(url).Append("\">Download original ISO/image</a></p></article>");
             }
-            sb.AppendLine("</tbody></table>");
+            sb.AppendLine("</div>");
         }
-        sb.AppendLine("</body></html>");
+        sb.AppendLine("<footer>Select an image on the target computer to boot. Advanced methods remain available in its boot menu. Streaming is experimental; Windows and unknown images keep their existing boot paths.</footer></body></html>");
 
         var bytes = Encoding.UTF8.GetBytes(sb.ToString());
         response.StatusCode = (int)HttpStatusCode.OK;
         response.ContentType = "text/html; charset=utf-8";
         response.ContentLength64 = bytes.Length;
-        await response.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
+        if (request.HttpMethod != "HEAD") await response.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
     }
 
     private async Task HandleRefreshAsync(HttpListenerResponse response, CancellationToken ct)
@@ -295,13 +305,14 @@ internal sealed class HttpFileService : BackgroundService
                     : (m.WindowsEra == WindowsBootEra.Modern ? "<span class=\"yes\">Modern</span>" : $"<span class=\"warn\">{m.WindowsEra}</span>");
 
                 string directBootCell;
-                if (m.Profile is { DirectBoots.Length: > 0 } pdb && !m.IsModernWindows)
+                var recipes = _generator.GetApplicableRecipes(entry);
+                if (recipes.Count > 0)
                 {
-                    var recipeIds = string.Join(", ", pdb.DirectBoots.Select(r => WebUtility.HtmlEncode(r.Id)));
+                    var recipeIds = string.Join(", ", recipes.Select(r => WebUtility.HtmlEncode(r.Id)));
                     var squashfsLine = m.Squashfs is null
                         ? string.Empty
                         : $"<br><small>squashfs: <code>{WebUtility.HtmlEncode(m.Squashfs)}</code></small>";
-                    directBootCell = $"<span class=\"yes\">{pdb.DirectBoots.Length} recipe(s)</span><br><small>{recipeIds}</small>{squashfsLine}";
+                    directBootCell = $"<span class=\"yes\">{recipes.Count} recipe(s)</span><br><small>{recipeIds}</small>{squashfsLine}<br><small>{WebUtility.HtmlEncode(_generator.BootSummary(entry))}</small>";
                 }
                 else
                 {

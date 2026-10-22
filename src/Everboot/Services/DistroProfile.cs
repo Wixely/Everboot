@@ -38,7 +38,8 @@ internal sealed record DirectBootRecipe(
     string DisplayName,
     string KernelPath,
     string InitrdPath,
-    string KernelArgs);
+    string KernelArgs,
+    bool RequiresNfs = false);
 
 internal sealed record DistroProfile(
     string Id,
@@ -87,13 +88,19 @@ internal static class DistroProfiles
 
     private static readonly DirectBootRecipe[] CasperRecipes =
     {
-        // Modern casper (16.04+): netboot=httpfs + fetch=<squashfs-url>
+        // Mount the entire ISO tree so Casper can resolve its own filesystem layers.
         new(
-            "casper-httpfs",
-            "casper (modern - netboot=httpfs + fetch=)",
+            "casper-nfs",
+            "Stream live filesystem (experimental NFS)",
             "casper/vmlinuz",
             "casper/initrd",
-            "boot=casper netboot=httpfs ip=dhcp fetch=http://{server}/iso/{slug}/{squashfs} url=http://{server}/isos/{file} ---"),
+            "boot=casper netboot=nfs nfsroot={nfs-server}:/{slug} nfsopts={nfs-options} ip=dhcp ---", true),
+        new(
+            "casper-nfs-lz",
+            "Stream live filesystem (experimental NFS, legacy initrd)",
+            "casper/vmlinuz",
+            "casper/initrd.lz",
+            "boot=casper netboot=nfs nfsroot={nfs-server}:/{slug} nfsopts={nfs-options} ip=dhcp ---", true),
         // Legacy casper (14.04 era): netboot=url, casper downloads & loop-mounts the whole ISO
         new(
             "casper-url",
@@ -105,10 +112,16 @@ internal static class DistroProfiles
 
     private static readonly DirectBootRecipe[] LiveBootRecipes =
     {
+        new(
+            "live-nfs",
+            "Stream live filesystem (experimental NFS)",
+            "live/vmlinuz",
+            "live/initrd.img",
+            "boot=live components netboot=nfs nfsroot={nfs-server}:/{slug} nfsopts={nfs-options} ip=dhcp ---", true),
         // Debian live-boot with fetch= (squashfs over HTTP)
         new(
             "live-fetch",
-            "live-boot (fetch= squashfs over HTTP)",
+            "Download live filesystem into RAM (HTTP)",
             "live/vmlinuz",
             "live/initrd.img",
             "boot=live components fetch=http://{server}/iso/{slug}/{squashfs} ip=dhcp ---"),
@@ -143,10 +156,9 @@ internal static class DistroProfiles
         //
         // casper under PXE cannot see iPXE's sanboot virtual disk after the
         // kernel takes over (firmware-only handoff). The working pattern is
-        // for casper to fetch the squashfs over HTTP via its own wget. Two
-        // recipes are codified: the modern netboot=httpfs+fetch= and the
-        // legacy netboot=url that fetches the whole ISO. {squashfs} expands
-        // to the actual squashfs path discovered inside the ISO at scan time.
+        // to mount the ISO tree via its own NFS client. HTTP download remains
+        // an explicit fallback. NFS preserves all filesystem layers and avoids
+        // downloading the complete compressed root filesystem into RAM.
         // -----------------------------------------------------------------
         new("ubuntu", "Ubuntu", DistroFamily.LinuxLive,
             new Regex("^ubuntu", Opt),
