@@ -66,6 +66,16 @@ try
     menu = generator.GenerateIpxeMenu("192.0.2.1:8080");
     string Method(string label) => menu.Replace("\r\n", "\n", StringComparison.Ordinal).Split(":" + label + "\n", StringSplitOptions.None)[1].Split("\n:", StringSplitOptions.None)[0];
     Check(catalog.Entries.Single(e => e.Slug == "win98").Metadata.WindowsEra == WindowsBootEra.NinexClass, "9x fixture detected");
+    var ubuntuInstaller = DistroProfiles.Match("Ubuntu-Server 10", p => p == "install/vmlinuz");
+    var slitaz = DistroProfiles.Match("SliTaz core-4in1", p => p == "boot/bzImage");
+    Check(ubuntuInstaller?.Id == "ubuntu-server-classic" && ubuntuInstaller.DirectBoots.Length == 0,
+        "classic Ubuntu installer recognised without unverified PXE recipe");
+    Check(QemuLaunch.RecommendedProfile(new(IsoLayout.Iso9660, WindowsBootEra.None, null, ubuntuInstaller, null, null)) == "modern",
+        "classic Ubuntu installer gets a 64-bit CPU");
+    Check(slitaz?.Id == "slitaz" && QemuLaunch.RecommendedProfile(new(IsoLayout.Iso9660, WindowsBootEra.None, null, slitaz, null, null)) == "classic",
+        "SliTaz gets enough RAM to expand its live filesystem");
+    Check(DistroProfiles.Match("SliTaz core-4in1", _ => false) is null && DistroProfiles.Match("Ubuntu-Server 10", _ => false) is null,
+        "new profiles require media contents as well as labels");
     Check(Method("win98-auto").Contains("goto win98-saniscsi"), "9x has a one-selection compatibility attempt");
     Check(Method("win98-sanhttp").Contains("iseq ${platform} pcbios || goto win98-needs-bios"), "9x HTTP path requires BIOS");
     Check(Method("xp-saniscsi").Contains("iseq ${platform} pcbios || goto xp-needs-bios"), "XP iSCSI path requires BIOS");

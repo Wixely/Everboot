@@ -5,16 +5,36 @@ using System.Text.Json;
 using Everboot.Configuration;
 using Everboot.Services;
 using Everboot.Services.Nfs;
+using Everboot.Services.Smb;
 using Everboot.Services.Vm;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
+if (args.FirstOrDefault() == "--inspect")
+{
+    if (args.Length != 2) throw new ArgumentException("Usage: --inspect <image-directory>");
+    var inspector = new IsoInspector(NullLogger<IsoInspector>.Instance);
+    foreach (var path in Directory.EnumerateFiles(args[1], "*.iso"))
+    {
+        var metadata = inspector.Inspect(path);
+        Console.WriteLine(JsonSerializer.Serialize(new { File = Path.GetFileName(path), Size = new FileInfo(path).Length,
+            metadata.VolumeLabel, Era = metadata.WindowsEra.ToString(), Profile = metadata.Profile?.Id,
+            metadata.Squashfs, Recipes = metadata.AvailableRecipes?.Select(r => r.Id) }));
+    }
+    return 0;
+}
+string? Option(string name)
+{
+    var index = Array.IndexOf(args, name);
+    return index < 0 ? null : index + 1 < args.Length ? args[index + 1] : throw new ArgumentException("Missing value for " + name);
+}
+
 // Real QEMU smoke test. Optional supplied ISO enables interactive guest validation.
-// Commands: shot <absolute-path.ppm>, key <qcode>, stats, quit. No shell evaluation.
+// Commands: shot <path.png|ppm>, key <qcode>, wait <seconds>, stats, quit. No shell evaluation.
 var root = Path.Combine(Path.GetTempPath(), "everboot-vm-probe-" + Guid.NewGuid().ToString("N"));
 Directory.CreateDirectory(Path.Combine(root, "isos"));
 var source = args.FirstOrDefault();
-var file = source is null ? "disk.img" : "boot.iso";
+var file = source is null || args.Contains("--raw") ? "disk.img" : "boot.iso";
 if (source is null)
 {
     using var disk = File.Create(Path.Combine(root, "isos", file)); disk.SetLength(16 * 1024 * 1024);
@@ -33,10 +53,39 @@ try
 {
     await server.StartAsync(default);
     var uri = new Uri($"http://localhost:{port}");
-    var image = new VmImage(file, "/isos/" + file, new FileInfo(Path.Combine(root, "isos", file)).Length, "legacy");
+    var metadata = catalog.Entries.Single().Metadata;
+    if (args.Contains("--verify-wim"))
+    {
+        if (!metadata.IsModernWindows) throw new Exception("Windows installer was not detected.");
+        using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(uri, "/iso/boot/sources/boot.wim"));
+        request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 7);
+        using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+        if (response.StatusCode != HttpStatusCode.PartialContent) throw new Exception("WIM range request failed.");
+        var bytes = new byte[8];
+        using (var body = await response.Content.ReadAsStreamAsync()) await body.ReadExactlyAsync(bytes);
+        if (!bytes.AsSpan(0, 5).SequenceEqual("MSWIM"u8)) throw new Exception("HTTP did not serve the WIM header.");
+        using var export = new NfsExport(catalog.Entries.Single());
+        var sources = export.Children(export.Root).Single(n => n.Name.Equals("sources", StringComparison.OrdinalIgnoreCase));
+        var wim = export.Children(sources).Single(n => n.Name.Equals("boot.wim", StringComparison.OrdinalIgnoreCase));
+        if (!export.Read(wim, 0, 8).SequenceEqual(bytes)) throw new Exception("NFS export WIM differs.");
+        var shares = new SmbShareCatalog(catalog, options, NullLogger<SmbShareCatalog>.Instance);
+        if (!shares.TryOpen("boot", out var share)) throw new Exception("SMB share did not open.");
+        using (share)
+        using (var content = share!.FileSystem.OpenFile(IsoFileResolver.Resolve(share.FileSystem, "sources/boot.wim")!, FileMode.Open, FileAccess.Read))
+        {
+            var smbBytes = new byte[8]; content.ReadExactly(smbBytes);
+            if (!smbBytes.SequenceEqual(bytes)) throw new Exception("SMB share WIM differs.");
+        }
+        Console.WriteLine("PASS: Windows detection, HTTP WIM range, NFS export and SMB share agree on the WIM header.");
+        return 0;
+    }
+    var profile = Option("--profile") ?? QemuLaunch.RecommendedProfile(metadata);
+    var image = new VmImage(file, "/isos/" + file, new FileInfo(Path.Combine(root, "isos", file)).Length, profile);
     var qmpPort = new TcpListener(IPAddress.Loopback, 0); qmpPort.Start();
     var controlPort = ((IPEndPoint)qmpPort.LocalEndpoint).Port; qmpPort.Stop();
-    qemu = await QemuLaunch.StartAsync(uri, image, "legacy", null, Path.Combine(root, "machines"), http, default, diagnosticPort: controlPort);
+    var diagnosticArgs = Option("--qemu-args") is { } argsPath ? JsonSerializer.Deserialize<string[]>(File.ReadAllText(argsPath)) : null;
+    qemu = await QemuLaunch.StartAsync(uri, image, profile, null, Path.Combine(root, "machines"), http, default,
+        diagnosticPort: controlPort, diagnosticArguments: diagnosticArgs);
     var errors = qemu.StandardError.ReadToEndAsync();
     using var control = new TcpClient();
     for (var i = 0; !control.Connected; i++)
@@ -50,21 +99,25 @@ try
     var greeting = await input.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(20));
     if (greeting is null) throw new Exception("QEMU failed: " + await errors);
     await Qmp("qmp_capabilities");
-    Console.WriteLine("PASS: QEMU opened streamed media with 128 MiB guest RAM. HTTP: " + uri);
+    Console.WriteLine("PASS: QEMU opened streamed media. Profile: " + profile + ". HTTP: " + uri);
     Console.WriteLine("PASS: " + await Qmp("query-block"));
     if (source is not null)
     {
-        Console.WriteLine("Interactive boot probe: shot <absolute-path.ppm>, key <qcode>, stats, quit");
-        while (Console.ReadLine() is { } command && command != "quit")
+        Console.WriteLine("Interactive boot probe: shot <path.png|ppm>, key <qcode>, wait <seconds>, stats, quit");
+        using var script = Option("--script") is { } scriptPath ? File.OpenText(scriptPath) : null;
+        var commands = (TextReader?)script ?? Console.In;
+        while (commands.ReadLine() is { } command && command != "quit")
         {
             var parts = command.Split(' ', 2);
-            if (parts[0] == "shot" && parts.Length == 2) Console.WriteLine(await Qmp("screendump", new { filename = parts[1] }));
+            if (parts[0] == "shot" && parts.Length == 2) Console.WriteLine(await Qmp("screendump", new { filename = Path.GetFullPath(parts[1]), format = Path.GetExtension(parts[1]) == ".png" ? "png" : "ppm" }));
             else if (parts[0] == "key" && parts.Length == 2)
             {
                 Console.WriteLine(await Qmp("send-key", new { keys = new[] { new { type = "qcode", data = parts[1] } } }));
                 await Task.Delay(150); // QMP replies before key release; avoid dropping the next key.
             }
             else if (parts[0] == "stats") Console.WriteLine(await Qmp("query-blockstats"));
+            else if (parts[0] == "wait" && parts.Length == 2 && int.TryParse(parts[1], out var seconds) && seconds is >= 0 and <= 300)
+                await Task.Delay(TimeSpan.FromSeconds(seconds));
         }
     }
     try { await Qmp("quit"); }

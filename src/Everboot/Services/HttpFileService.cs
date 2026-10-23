@@ -6,8 +6,6 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using DiscUtils;
-using DiscUtils.Iso9660;
-using DiscUtils.Udf;
 using Everboot.Configuration;
 using Everboot.Services.Nfs;
 using Microsoft.Extensions.Hosting;
@@ -129,8 +127,7 @@ internal sealed class HttpFileService : BackgroundService
             {
                 var images = _catalog.Entries.Select(e => new Vm.VmImage(e.DisplayName,
                     "/isos/" + Uri.EscapeDataString(e.FileName), e.SizeBytes,
-                    e.Metadata.WindowsEra == WindowsBootEra.XpClass ? "classic" :
-                    e.Metadata.IsModernWindows || e.Metadata.Profile?.Family is DistroFamily.LinuxLive or DistroFamily.LinuxInstaller ? "modern" : "legacy"));
+                    Vm.QemuLaunch.RecommendedProfile(e.Metadata)));
                 var bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(images);
                 response.ContentType = "application/json; charset=utf-8";
                 response.Headers["Cache-Control"] = "no-store";
@@ -625,16 +622,7 @@ internal sealed class HttpFileService : BackgroundService
 
     private static DiscFileSystem? OpenFileSystem(Stream isoStream, IsoLayout layout)
     {
-        isoStream.Position = 0;
-        if (layout.HasFlag(IsoLayout.Iso9660))
-        {
-            return new CDReader(isoStream, joliet: true);
-        }
-        if (layout.HasFlag(IsoLayout.Udf))
-        {
-            return new UdfReader(isoStream);
-        }
-        return null;
+        return IsoFileSystem.Open(isoStream, layout);
     }
 
     private static async Task CopyExactAsync(Stream source, Stream destination, long length, CancellationToken ct)

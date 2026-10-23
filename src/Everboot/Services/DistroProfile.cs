@@ -151,6 +151,16 @@ internal static class DistroProfiles
 
     public static readonly DistroProfile[] All =
     {
+        // Installer CDs predate Casper. Recognise their hardware needs without
+        // advertising an unverified PXE kernel handoff recipe.
+        new("ubuntu-server-classic", "Ubuntu Server (classic installer)", DistroFamily.LinuxInstaller,
+            new Regex("^ubuntu.server", Opt), new[] { "install/vmlinuz" },
+            None, null, null, null),
+
+        new("slitaz", "SliTaz", DistroFamily.LinuxLive,
+            new Regex("^slitaz", Opt), new[] { "boot/bzImage" },
+            None, null, null, "The live system expands into guest RAM; use at least the Classic VM preset."),
+
         // -----------------------------------------------------------------
         // Ubuntu and downstream (Mint, Pop, elementary) - all use casper.
         //

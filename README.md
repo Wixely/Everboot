@@ -18,7 +18,7 @@ Everboot bundles the moving pieces of a typical PXE pipeline into one process so
 
 ## Experimental streaming boot
 
-Branch: `experimental/streaming-boot`. Reviewed: **2026-10-22**.
+Branch: `experimental/streaming-boot`. Reviewed: **2026-10-23**.
 
 This branch embeds a read-only **NFSv3 server in the same C# process**. Each
 ISO becomes an export at `/<image-slug>`, backed directly by DiscUtils. There is
@@ -162,6 +162,16 @@ media access, not an exhaustive package test or Windows compatibility result.
 The host also needs RAM for QEMU; 128 MiB is the guest allocation, not total host
 memory. The original ISO remains on the server.
 
+**Additional tests, 2026-10-23:** six of nine supplied images reached a desktop,
+installer, or recovery menu. Windows 7 and XP reached Setup, Ubuntu 10.10 Server
+reached its installer, SliTaz reached its desktop, and Super Grub2 reached its
+recovery menu. Serenity reached its desktop with a diagnostic direct-kernel
+configuration. Full installations remain unverified. See the
+[image-by-image test report](docs/iso-test-matrix.md) for failures, workarounds,
+streaming counters, and reproduction details. UDF bridge DVDs now use their UDF
+file tree consistently; classic Ubuntu Server and SliTaz receive suitable VM
+presets automatically.
+
 The integration suite covers catalog metadata, range preflight, launch arguments
 and HTML escaping. Chromium verified the Start action, running/closed status,
 duplicate-launch disabling, mobile layout, and rejection of cross-origin POSTs.
@@ -173,10 +183,27 @@ dotnet run --project tools/VmProbe -c Release
 dotnet run --project tools/VmProbe -c Release -- path/to/freedos.iso
 ```
 
-The second command is interactive: `key ret`, `shot /absolute/screen.ppm`,
-`stats`, and `quit`. It uses a temporary local server, a temporary VM disk, and
+The second command is interactive: `key ret`, `shot /absolute/screen.png`,
+`wait 30`, `stats`, and `quit`. It uses a temporary local server, a temporary VM disk, and
 a loopback QMP port; it deletes its test tree on exit. Supply your own licensed
 media; no OS images are distributed with Everboot.
+
+For repeatable investigations:
+
+```powershell
+dotnet run --project tools/VmProbe -c Release -- --inspect testisos
+dotnet run --project tools/VmProbe -c Release -- path/to/image.iso --profile classic --script commands.txt
+dotnet run --project tools/VmProbe -c Release -- path/to/windows7.iso --verify-wim
+```
+
+Script files contain the same commands, one per line; `wait` accepts 0-300
+seconds. `--verify-wim` checks Windows detection and matching WIM headers through
+HTTP, the NFS export backend, and the SMB share backend without starting QEMU.
+`--raw` treats a misleadingly named file as a disk image; `--qemu-args file.json`
+adds an explicit JSON string array of local diagnostic arguments. These switches
+belong to the test harness and are never accepted from the server catalog or
+client web UI. Scripts that install an OS still use disposable disks deleted
+when the probe exits; use the normal client for persistence tests.
 
 Remaining work (owner: maintainer): validate Windows 95/98/ME and NT/2000/XP
 setup through reboot and installation, support pairing nonbootable CDs with

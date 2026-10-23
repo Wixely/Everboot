@@ -12,6 +12,10 @@ internal static class QemuLaunch
 {
     internal static readonly string[] Profiles = ["legacy", "classic", "modern"];
 
+    internal static string RecommendedProfile(IsoMetadata metadata) =>
+        metadata.WindowsEra == WindowsBootEra.XpClass || metadata.Profile?.Id == "slitaz" ? "classic" :
+        metadata.IsModernWindows || metadata.Profile?.Family is DistroFamily.LinuxLive or DistroFamily.LinuxInstaller ? "modern" : "legacy";
+
     internal static Uri MediaUri(Uri server, VmImage image)
     {
         if (server.Scheme is not ("http" or "https") || server.UserInfo.Length != 0)
@@ -87,7 +91,7 @@ internal static class QemuLaunch
         return args;
     }
 
-    internal static async Task<Process> StartAsync(Uri server, VmImage image, string profile, string? qemuDir, string dataDir, HttpClient http, CancellationToken ct, int diagnosticPort = 0)
+    internal static async Task<Process> StartAsync(Uri server, VmImage image, string profile, string? qemuDir, string dataDir, HttpClient http, CancellationToken ct, int diagnosticPort = 0, IReadOnlyList<string>? diagnosticArguments = null)
     {
         var media = MediaUri(server, image);
         if (image.Size < 512 || !Profiles.Contains(profile)) throw new ArgumentException("Invalid image or machine profile.");
@@ -132,6 +136,8 @@ internal static class QemuLaunch
             {
                 start.ArgumentList.Add("-display"); start.ArgumentList.Add("none");
                 start.ArgumentList.Add("-qmp"); start.ArgumentList.Add($"tcp:127.0.0.1:{diagnosticPort},server=on,wait=off");
+                // Only the local test harness supplies these. Never accepted by the client web UI or server catalog.
+                foreach (var argument in diagnosticArguments ?? []) start.ArgumentList.Add(argument);
             }
             var guest = Process.Start(start) ?? throw new IOException("Could not start QEMU.");
             guest.EnableRaisingEvents = true;

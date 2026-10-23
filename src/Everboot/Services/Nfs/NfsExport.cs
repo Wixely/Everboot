@@ -1,6 +1,4 @@
 using DiscUtils;
-using DiscUtils.Iso9660;
-using DiscUtils.Udf;
 
 namespace Everboot.Services.Nfs;
 
@@ -30,8 +28,7 @@ internal sealed class NfsExport : IDisposable
             64 * 1024, FileOptions.RandomAccess);
         try
         {
-            _fs = entry.Metadata.Layout.HasFlag(IsoLayout.Iso9660)
-                ? new CDReader(_image, joliet: true) : new UdfReader(_image);
+            _fs = IsoFileSystem.Open(_image, entry.Metadata.Layout) ?? throw new InvalidDataException("Image has no supported filesystem.");
             _nodes.Add(1, new(1, "\\", "", true, 4096, 1));
         }
         catch { _image.Dispose(); throw; }

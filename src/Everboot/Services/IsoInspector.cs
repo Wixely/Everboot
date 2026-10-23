@@ -155,15 +155,13 @@ internal sealed class IsoInspector
                 return new IsoMetadata(IsoLayout.None, WindowsBootEra.None, null, null, null, null);
             }
 
-            // Prefer ISO9660+Joliet for Windows boot file probing - boot.wim etc. live
-            // on the ISO9660 side of every Windows install ISO since Vista.
+            // Prefer the complete UDF view on bridge DVDs; ISO9660 may contain
+            // only a readme directing users to a UDF-capable operating system.
             stream.Position = 0;
             DiscFileSystem? fs = null;
             try
             {
-                fs = layout.HasFlag(IsoLayout.Iso9660)
-                    ? new CDReader(stream, joliet: true)
-                    : new UdfReader(stream);
+                fs = IsoFileSystem.Open(stream, layout)!;
 
                 volumeLabel = TryReadVolumeLabel(fs);
                 (era, winFiles) = ProbeWindowsEra(fs);
@@ -349,7 +347,8 @@ internal sealed class IsoInspector
         try
         {
             var label = fs.VolumeLabel;
-            return string.IsNullOrWhiteSpace(label) ? null : label.Trim();
+            label = label?.Trim('\0', ' ');
+            return string.IsNullOrWhiteSpace(label) ? null : label;
         }
         catch
         {
