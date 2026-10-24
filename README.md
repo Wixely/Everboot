@@ -16,6 +16,47 @@ Everboot bundles the moving pieces of a typical PXE pipeline into one process so
 | **Boot config generator** | Renders the iPXE menu from the contents of `data/isos/` (both `*.iso` and `*.img`). |
 | **NFSv3 (experimental)** | Read-only ISO file trees over TCP, with embedded MOUNTv3 and portmapper v2. Compatible Linux live environments mount these trees after kernel handoff instead of downloading the whole payload into RAM. |
 
+## Image settings and device rules
+
+Open the web library and select **Detection & boot settings** on an image.
+The page shows its detected profile, volume label, filesystem, Windows generation,
+live filesystem and usable boot recipes alongside the effective settings.
+Override the name, profile or preferred method, or supply custom Linux kernel,
+initrd and arguments. **Reset to detection** removes the overrides. Original
+ISO/image files are never changed by these settings.
+
+**Device rules & preview** lets you match a MAC address, an IP address or a CIDR
+subnet. When both MAC and IP are set, both must match. Enabled rules run in
+ascending priority order; the first match wins (ties sort by rule ID).
+Choose either a menu containing selected images or a single image to boot
+directly with no selection screen. An empty selected list shows no images;
+“All current and future images” follows the library. Unmatched devices see the
+normal library. Use the preview before rebooting a device.
+
+A missing forced image or pre-handoff failure stops the client without offering
+another OS. These rules cannot control errors after the OS takes over.
+They control boot behaviour, **not authorization**: iPXE reports its MAC/IP,
+and direct HTTP, SMB, NFS and iSCSI access remains unchanged.
+
+Settings persist in `<DataDirectory>/boot-policies.json`, outside the `isos`
+folder, so the ISO library may remain a read-only NAS mount. Back up this file
+with the server configuration. Saves are atomic and stale forms are rejected.
+Invalid policy files stop catalog initialization rather than silently ignoring
+device restrictions. Restart after manually editing this file.
+
+Editing works locally on the server by default. Remote saves require
+`Everboot:Http:ManagementKey` (environment variable
+`Everboot__Http__ManagementKey`) and the key entered in the form. Keep the key
+out of committed configuration and use a trusted management network or TLS
+reverse proxy; the built-in listener is HTTP. Page forms include CSRF protection.
+Do not expose the loopback listener through an untrusted proxy: a loopback proxy
+connection is treated as local. The UI itself remains readable from the LAN.
+
+An explicitly selected unavailable method fails instead of silently changing
+methods. Custom kernel/initrd paths must exist inside the image; network and
+filesystem drivers still need to be included by the OS. This feature does not
+make every ISO compatible with PXE or guarantee streaming.
+
 ## Experimental streaming boot
 
 Branch: `experimental/streaming-boot`. Reviewed: **2026-10-24**.

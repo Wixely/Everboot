@@ -33,9 +33,9 @@ internal sealed class BootConfigGenerator
         _options = options.Value;
     }
 
-    public string GenerateIpxeMenu(string serverAuthority)
+    public string GenerateIpxeMenu(string serverAuthority, BootDecision? decision = null)
     {
-        var entries = _catalog.Entries;
+        var entries = decision?.Images ?? _catalog.Entries;
         var sb = new StringBuilder(8192);
 
         sb.AppendLine("#!ipxe");
@@ -43,9 +43,19 @@ internal sealed class BootConfigGenerator
         sb.AppendLine();
 
         EmitConsoleSetup(sb, serverAuthority);
-        EmitMainMenu(sb, entries);
-        EmitAdvancedMenu(sb, entries);
-        EmitCommonLabels(sb);
+        var forced = decision?.Rule?.Mode == "force";
+        if (forced)
+        {
+            if (decision!.ForcedImage is { } assigned && CanBoot(assigned))
+                sb.AppendLine($"goto {assigned.Slug}-auto");
+            sb.AppendLine(":start\n:cancel\n:methodfail\n:bootfail\necho Assigned boot failed or is unavailable. Contact your administrator.\n:policy-stop\nsleep 60\ngoto policy-stop");
+        }
+        else
+        {
+            EmitMainMenu(sb, entries);
+            EmitAdvancedMenu(sb, entries);
+            EmitCommonLabels(sb);
+        }
 
         foreach (var entry in entries)
         {
@@ -56,7 +66,7 @@ internal sealed class BootConfigGenerator
             }
             else
             {
-                EmitMethodSubmenu(sb, entry);
+                if (!forced) EmitMethodSubmenu(sb, entry);
                 EmitMethodBodies(sb, serverAuthority, entry);
             }
         }
@@ -186,8 +196,22 @@ internal sealed class BootConfigGenerator
 
     private static bool CanBoot(IsoEntry entry) => entry.Metadata.Profile?.Family != DistroFamily.NotForPxe;
 
+    internal string? OverrideProblem(IsoEntry entry)
+    {
+        if (entry.Override is not { } setting) return null;
+        if (setting.Kernel is not null && GetApplicableRecipes(entry).Count == 0)
+            return "Custom boot is unavailable. Check kernel/initrd paths, live filesystem path and required services.";
+        return IsMethodAvailable(entry, setting.Method) ? null : "The selected boot method is unavailable for this image or server configuration.";
+    }
+
+    private bool IsMethodAvailable(IsoEntry entry, string method) => method is "auto" or "sanhttp" or "memdisk" ||
+        method == "saniscsi" && _options.Iscsi.Enabled || method == "wimboot" && entry.Metadata.IsModernWindows ||
+        GetApplicableRecipes(entry).Any(r => "direct-" + r.Id == method);
+
     public string BootSummary(IsoEntry entry)
     {
+        if (OverrideProblem(entry) is not null) return "Override needs attention";
+        if (entry.Override is { Method: not "auto" } setting) return "Override: " + setting.Method;
         if (!CanBoot(entry)) return "Not supported";
         if (HasDosSource(entry)) return "Experimental DOS PXE source (requires local FAT disk)";
         if (entry.Metadata.WindowsEra == WindowsBootEra.NinexClass)
@@ -332,7 +356,17 @@ internal sealed class BootConfigGenerator
         sb.AppendLine();
         sb.AppendLine($":{slug}-auto");
         sb.AppendLine($"set last-method-menu {slug}");
-        if (HasDosSource(entry))
+        if (entry.Override is { Method: not "auto" } setting)
+        {
+            var valid = IsMethodAvailable(entry, setting.Method);
+            sb.AppendLine(valid ? $"goto {slug}-{setting.Method}" : "goto methodfail");
+        }
+        else if (entry.Override?.Kernel is not null && recipes.Count == 0)
+        {
+            sb.AppendLine("echo Custom kernel boot is unavailable. Check ISO paths and required services.");
+            sb.AppendLine("goto methodfail");
+        }
+        else if (HasDosSource(entry))
         {
             sb.AppendLine("iseq ${platform} pcbios || goto methodfail");
             sb.AppendLine("echo Experimental DOS network-source test; no disk formatting.");

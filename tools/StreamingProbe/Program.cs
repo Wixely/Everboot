@@ -345,7 +345,8 @@ try
             request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(2047, 5046);
             using var range = await client.SendAsync(request);
             Check(range.StatusCode == HttpStatusCode.PartialContent && (await range.Content.ReadAsByteArrayAsync()).SequenceEqual(payload.Skip(2047).Take(3000)), "HTTP range and NFS expose identical ISO content");
-            Check((await client.GetStringAsync("/boot.ipxe")).Contains("netboot=nfs"), "HTTP serves streaming menu");
+            Check((await client.GetStringAsync("/boot.ipxe")).Contains("mac=${netX/mac}&ip=${netX/ip}"), "PXE bootstrap requests client identity");
+            Check((await client.GetStringAsync("/boot.ipxe?identity=1")).Contains("netboot=nfs"), "HTTP serves streaming menu");
             using (var dosHead = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/dos-source/win98")))
                 Check(dosHead.IsSuccessStatusCode && dosHead.Content.Headers.ContentLength == DosSourceDisk.Length && (await dosHead.Content.ReadAsStreamAsync()).ReadByte() == -1, "DOS virtual source HEAD advertises capacity without creating a disk");
             using (var dosRequest = new HttpRequestMessage(HttpMethod.Get, "/dos-source/win98"))
@@ -447,6 +448,74 @@ try
                 catch (ArgumentException) { checks++; }
             }
             File.Delete(sidecar);
+            var policies = catalog.Policies;
+            var original = catalog.Entries.Single(e => e.FileName == "ubuntu.iso");
+            policies.SaveImage(new("ubuntu.iso", "Test override", Method: "sanhttp"), policies.Snapshot.Revision);
+            catalog.ForceRescan();
+            Check(catalog.Entries.Single(e => e.FileName == "ubuntu.iso").DisplayName == "Test override" &&
+                generator.GenerateIpxeMenu("192.0.2.1").Contains("set last-method-menu ubuntu\r\ngoto ubuntu-sanhttp".Replace("\r\n", Environment.NewLine)), "image override changes effective auto path");
+            Check(new BootPolicies(root).Snapshot.ImageOverrides!.Single().Method == "sanhttp", "image policy survives reload");
+            try { policies.SaveImage(new("ubuntu.iso"), 0); throw new Exception("stale revision accepted"); }
+            catch (InvalidOperationException) { checks++; }
+            foreach (var invalid in new[] { new ImageBootOverride("ubuntu.iso", Kernel: "../bad", Initrd: "initrd"), new ImageBootOverride("ubuntu.iso", Arguments: "quiet; shell") })
+            {
+                try { policies.SaveImage(invalid, policies.Snapshot.Revision); throw new Exception("invalid override accepted"); }
+                catch (ArgumentException) { checks++; }
+            }
+            policies.SaveImage(new("ubuntu.iso"), policies.Snapshot.Revision, reset: true); catalog.ForceRescan();
+            Check(catalog.Entries.Single(e => e.FileName == "ubuntu.iso").Override is null, "reset restores detection");
+            policies.SaveImage(new("ubuntu.iso", Profile: "none"), policies.Snapshot.Revision); catalog.ForceRescan();
+            var generic = catalog.Entries.Single(e => e.FileName == "ubuntu.iso");
+            Check(generic.Metadata.Profile is null && generic.DetectedMetadata.Profile is not null, "generic override preserves original detection");
+            policies.SaveImage(new("ubuntu.iso", Kernel: "casper/vmlinuz", Initrd: "casper/initrd", Arguments: "boot=casper"), policies.Snapshot.Revision); catalog.ForceRescan();
+            Check(generator.GenerateIpxeMenu("192.0.2.1").Contains("goto ubuntu-direct-custom"), "custom kernel recipe selected");
+            policies.SaveImage(new("ubuntu.iso", Kernel: "missing", Initrd: "missing"), policies.Snapshot.Revision); catalog.ForceRescan();
+            Check(generator.GenerateIpxeMenu("192.0.2.1").Contains("Custom kernel boot is unavailable"), "missing custom files fail instead of selecting SAN");
+            policies.SaveImage(new("ubuntu.iso"), policies.Snapshot.Revision, reset: true); catalog.ForceRescan();
+            var subnet = new DeviceBootRule("subnet", "Lab subnet", 100, true, null, "192.0.2.0/24", "menu", ["ubuntu.iso"]);
+            policies.SaveRule(subnet, policies.Snapshot.Revision);
+            var forcedRule = new DeviceBootRule("device", "Assigned device", 10, true, "52-54-00-12-34-56", "192.0.2.42", "force", ForcedImage: "ubuntu.iso");
+            policies.SaveRule(forcedRule, policies.Snapshot.Revision);
+            var forcedDecision = policies.Decide(catalog.Entries, "52:54:00:12:34:56", "192.0.2.42");
+            var forcedScript = generator.GenerateIpxeMenu("192.0.2.1", forcedDecision);
+            Check(forcedDecision.Rule?.Id == "device" && forcedScript.Contains("goto ubuntu-auto") && !forcedScript.Contains("\nmenu ") && !forcedScript.Contains("\nchoose ") && !forcedScript.Contains(":windows-auto"), "forced boot bypasses menus and includes only assigned image");
+            Check(policies.Decide(catalog.Entries, "52:54:00:12:34:56", "192.0.2.43").Rule?.Id == "subnet", "both MAC and IP must match; subnet fallback works");
+            Check(policies.Decide(catalog.Entries, null, "198.51.100.1").Images.Count == catalog.Entries.Count, "unmatched device receives default library");
+            var filtered = await client.GetStringAsync("/boot.ipxe?identity=1&ip=192.0.2.12");
+            Check(filtered.Contains(":ubuntu-auto") && !filtered.Contains(":windows-auto"), "HTTP applies subnet filtering");
+            Check(!(await client.GetStringAsync("/boot.ipxe?identity=1&mac=52:54:00:12:34:56&ip=192.0.2.42")).Contains("\nmenu "), "HTTP forced boot has no menu");
+            policies.SaveRule(forcedRule with { ForcedImage = "missing.iso" }, policies.Snapshot.Revision);
+            Check(generator.GenerateIpxeMenu("192.0.2.1", policies.Decide(catalog.Entries, forcedRule.Mac, forcedRule.Ip)).Contains(":policy-stop"), "missing forced image stops without fallback");
+            policies.SaveRule(subnet with { Images = [] }, policies.Snapshot.Revision);
+            Check(policies.Decide(catalog.Entries, null, "192.0.2.12").Images.Count == 0, "empty allowlist exposes no images");
+            policies.SaveRule(subnet with { Ip = "2001:db8::/32", Images = null }, policies.Snapshot.Revision);
+            Check(policies.Decide(catalog.Entries, null, "2001:db8::42").Rule?.Id == "subnet", "IPv6 CIDR supported");
+            var management = await client.GetStringAsync("/images/ubuntu");
+            Check(management.Contains("Detection and effective settings") && management.Contains("Reset to detection"), "image settings show detection and reset");
+            string Hidden(string page, string name) => System.Text.RegularExpressions.Regex.Match(page, "name='" + name + "' value='([^']*)'").Groups[1].Value;
+            using (var denied = await client.PostAsync("/images/ubuntu", new FormUrlEncodedContent(new Dictionary<string, string> { ["method"] = "sanhttp" })))
+                Check(denied.StatusCode == HttpStatusCode.Forbidden, "management rejects missing CSRF token");
+            var fields = new Dictionary<string, string> { ["token"] = Hidden(management, "token"), ["revision"] = Hidden(management, "revision"), ["display"] = "<test>", ["method"] = "sanhttp" };
+            using (var saved = await client.PostAsync("/images/ubuntu", new FormUrlEncodedContent(fields)))
+                Check(saved.IsSuccessStatusCode && (await saved.Content.ReadAsStringAsync()).Contains("&lt;test&gt;"), "management saves and HTML-encodes overrides");
+            using (var stale = await client.PostAsync("/images/ubuntu", new FormUrlEncodedContent(fields)))
+                Check(stale.StatusCode == HttpStatusCode.Conflict, "stale form rejected");
+            policies.SaveImage(new("ubuntu.iso"), policies.Snapshot.Revision, reset: true); catalog.ForceRescan();
+            foreach (var rule in policies.Snapshot.DeviceRules!) policies.SaveRule(rule, policies.Snapshot.Revision, delete: true);
+            var rulePage = await client.GetStringAsync("/devices");
+            var ruleFields = new Dictionary<string, string> { ["token"] = Hidden(rulePage, "token"), ["revision"] = Hidden(rulePage, "revision"),
+                ["id"] = "web-rule", ["name"] = "Web rule", ["priority"] = "1", ["enabled"] = "on", ["mac"] = "52:54:00:12:34:56", ["mode"] = "force", ["forced"] = "ubuntu.iso" };
+            using (var savedRule = await client.PostAsync("/devices", new FormUrlEncodedContent(ruleFields)))
+                Check(savedRule.IsSuccessStatusCode && policies.Snapshot.DeviceRules!.Single().ForcedImage == "ubuntu.iso", "device form persists forced boot rule");
+            Check((await client.GetStringAsync("/devices?preview=1&mac=52:54:00:12:34:56")).Contains("Direct boot:"), "UI preview reflects rule decision");
+            ruleFields["revision"] = policies.Snapshot.Revision.ToString(); ruleFields["action"] = "delete";
+            using (var deletedRule = await client.PostAsync("/devices", new FormUrlEncodedContent(ruleFields)))
+                Check(deletedRule.IsSuccessStatusCode && policies.Snapshot.DeviceRules!.Length == 0, "device form deletes rule");
+            if (args.Contains("--serve-ui"))
+            {
+                Console.WriteLine($"UI fixture ready: {client.BaseAddress} ({checks} checks passed). Press Enter to stop.");
+                Console.ReadLine();
+            }
         }
         finally { await http.StopAsync(default); }
     }

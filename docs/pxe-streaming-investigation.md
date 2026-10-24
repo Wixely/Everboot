@@ -252,3 +252,31 @@ ISOs, target disks, logs, and screenshots are not committed.
 - [Microsoft SMB2 multi-protocol negotiation](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/00a5a917-e5f9-4d31-a0d5-a5ee7209c61f): SMB1-formatted initial negotiation can select SMB2.
 - [Microsoft NTLM challenge format](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/801a4681-8809-4be9-ab0d-61dcfe762786): challenge fields and target information.
 - [Microsoft directory query formats](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/10906442-294c-46d3-8515-c277efe1f752): the requested information class determines the directory-entry layout.
+# Device policy validation — 2026-10-24
+
+Image overrides and device rules now live in `boot-policies.json` beside the
+ISO directory. The web library links to detection/effective settings and a
+device-rule editor with a preview. See the README for matching and management
+access semantics.
+
+Validation for this change:
+
+- Windows: 573 StreamingProbe checks; Linux: 569 checks. Includes persistence,
+  reset, custom kernel selection, missing custom paths, MAC normalization,
+  combined MAC/IP matching, IPv4/IPv6 CIDR, filtering, forced boot, missing
+  assignments, HTTP form saves/deletion, CSRF rejection and stale-form rejection.
+- Release builds with warnings treated as errors.
+- QEMU BIOS PXE, 128 MiB RAM, no attached disk or installation media: NIC firmware
+  fetched the identity bootstrap, reported its MAC/IP, matched a combined MAC
+  and subnet rule and fetched the assigned synthetic image's kernel/initrd
+  without displaying a menu. The synthetic zero-filled kernel is not an OS and
+  did not provide a useful boot-error result.
+- Separate QEMU PXE run with an unavailable forced method reached the explicit
+  failure stop without a menu or alternate OS. Existing `PxeProbe --boot-policy
+  <file>` can load policies for repeatable tests; its copied image is `live.iso`
+  unless `--share-iso-directory` is used.
+
+Remaining: visual UI verification (MCPHub browser launch failed despite reporting
+an installed runtime), and optional real-OS regression with device policies.
+Recommended next action: agent completes desktop/mobile browser checks once an
+existing browser tool is available. No physical PXE validation is claimed.

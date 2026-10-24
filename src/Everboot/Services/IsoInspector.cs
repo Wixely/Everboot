@@ -238,7 +238,7 @@ internal sealed class IsoInspector
         },
     };
 
-    private static string? FindLargestMatchingFile(DiscFileSystem fs, string directory, string pattern)
+    internal static string? FindLargestMatchingFile(DiscFileSystem fs, string directory, string pattern)
     {
         // 1. Fast path - try well-known filenames first via the resolver we
         //    already know works (this is what the HTTP /iso route uses).

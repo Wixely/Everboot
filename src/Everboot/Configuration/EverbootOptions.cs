@@ -36,6 +36,7 @@ internal sealed class EverbootOptions
 
 internal sealed class HttpOptions
 {
+    public string? ManagementKey { get; set; }
     [Range(1, 65535)]
     public int Port { get; set; } = 8080;
 

@@ -18,7 +18,11 @@ internal sealed record IsoEntry(
     long SizeBytes,
     string FullPath,
     IsoMetadata Metadata,
-    bool IsLikelyFloppy);
+    bool IsLikelyFloppy)
+{
+    public IsoMetadata DetectedMetadata { get; init; } = Metadata;
+    public ImageBootOverride? Override { get; init; }
+}
 
 /// <summary>
 /// Scans the configured ISO directory and keeps a live list of bootable images.
@@ -42,6 +46,7 @@ internal sealed class BootCatalog : IDisposable
     public string DataDirectory { get; }
     public string IsoDirectory { get; }
     public string TftpDirectory { get; }
+    public BootPolicies Policies { get; }
 
     public BootCatalog(IOptions<EverbootOptions> options, IsoInspector inspector, ILogger<BootCatalog> logger)
     {
@@ -52,6 +57,7 @@ internal sealed class BootCatalog : IDisposable
         TftpDirectory = Path.Combine(DataDirectory, "tftp");
         Directory.CreateDirectory(IsoDirectory);
         Directory.CreateDirectory(TftpDirectory);
+        Policies = new BootPolicies(DataDirectory);
 
         Rescan();
 
@@ -147,7 +153,7 @@ internal sealed class BootCatalog : IDisposable
     /// </summary>
     private static readonly string[] ReservedSlugs =
     {
-        "start", "cancel", "shell", "reboot", "exit", "bootfail", "methodfail", "advanced",
+        "start", "cancel", "shell", "reboot", "exit", "bootfail", "methodfail", "advanced", "policy-stop",
     };
 
     private void RescanCore()
@@ -179,7 +185,7 @@ internal sealed class BootCatalog : IDisposable
                 string.Equals(Path.GetExtension(fileName), ".img", StringComparison.OrdinalIgnoreCase) &&
                 info.Length <= FloppySizeCeiling &&
                 metadata.Layout == IsoLayout.None;
-            entries.Add(new IsoEntry(fileName, slug, display, info.Length, info.FullName, metadata, isFloppy));
+            entries.Add(Policies.Apply(new IsoEntry(fileName, slug, display, info.Length, info.FullName, metadata, isFloppy)));
         }
 
         entries.Sort((a, b) => string.Compare(a.DisplayName, b.DisplayName, StringComparison.OrdinalIgnoreCase));

@@ -20,7 +20,7 @@ namespace Everboot.Services;
 ///   GET /boot.ipxe         dynamic iPXE menu (clients chainload this)
 ///   GET /isos/{file.iso}   the ISO bytes, with Range support for sanboot
 /// </summary>
-internal sealed class HttpFileService : BackgroundService
+internal sealed partial class HttpFileService : BackgroundService
 {
     private const int CopyBufferSize = 64 * 1024;
 
@@ -108,6 +108,11 @@ internal sealed class HttpFileService : BackgroundService
 
         try
         {
+            if (path == "/devices" || path.StartsWith("/images/", StringComparison.Ordinal))
+            {
+                await HandleManagementAsync(request, response, path, stoppingToken);
+                return;
+            }
             if (request.HttpMethod == "POST" && path == "/refresh")
             {
                 await HandleRefreshAsync(response, stoppingToken).ConfigureAwait(false);
@@ -224,7 +229,20 @@ internal sealed class HttpFileService : BackgroundService
     private async Task WriteIpxeMenuAsync(HttpListenerRequest request, HttpListenerResponse response, CancellationToken ct)
     {
         var authority = ResolveAuthority(request);
-        var script = _generator.GenerateIpxeMenu(authority);
+        response.Headers["Cache-Control"] = "no-store";
+        string script;
+        if (request.QueryString["identity"] != "1")
+            script = $"#!ipxe\nchain http://{authority}/boot.ipxe?identity=1&mac=${{netX/mac}}&ip=${{netX/ip}} || exit\n";
+        else
+        {
+            try
+            {
+                var decision = _catalog.Policies.Decide(_catalog.Entries, request.QueryString["mac"],
+                    string.IsNullOrWhiteSpace(request.QueryString["ip"]) ? request.RemoteEndPoint?.Address.ToString() : request.QueryString["ip"]);
+                script = _generator.GenerateIpxeMenu(authority, decision);
+            }
+            catch (ArgumentException) { response.StatusCode = 400; return; }
+        }
         var bytes = Encoding.UTF8.GetBytes(script);
 
         response.StatusCode = (int)HttpStatusCode.OK;
@@ -254,6 +272,7 @@ internal sealed class HttpFileService : BackgroundService
         sb.AppendLine($"<p class=\"muted\">Image folder: <code>{WebUtility.HtmlEncode(_catalog.IsoDirectory)}</code></p>");
 
         sb.AppendLine("<div class=\"toolbar\">");
+        sb.AppendLine("<a href=\"/devices\">Device rules &amp; preview</a>");
         sb.AppendLine("  <form method=\"post\" action=\"/refresh\" style=\"display:inline;margin:0\">");
         sb.AppendLine("    <button type=\"submit\">Refresh catalog</button>");
         sb.AppendLine("  </form>");
@@ -276,6 +295,8 @@ internal sealed class HttpFileService : BackgroundService
                   .Append("<p class=\"muted\">").Append(FormatSize(entry.SizeBytes)).Append(" &middot; ")
                   .Append(WebUtility.HtmlEncode(entry.Metadata.Profile?.DisplayName ?? "Other image")).Append("</p>")
                   .Append("<p class=\"badge\">").Append(WebUtility.HtmlEncode(_generator.BootSummary(entry))).Append("</p>")
+                  .Append("<p><a href=\"/images/").Append(entry.Slug).Append("\">Detection &amp; boot settings")
+                  .Append(entry.Override is null ? "" : " (overridden)").Append("</a></p>")
                   .Append("<p><a href=\"").Append(url).Append("\">Download original ISO/image</a></p></article>");
             }
             sb.AppendLine("</div>");

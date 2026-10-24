@@ -19,7 +19,7 @@ using Microsoft.Extensions.Options;
 // broadcast discovery is a separate acceptance test.
 if (args.Length < 2)
 {
-    Console.Error.WriteLine("Usage: PxeProbe <image.iso> <new-artifact-directory> [--ram MiB] [--port port] [--qemu-dir directory] [--wimboot file] [--disk-gib GiB | --dos-target] [--dos-startup file] [--share-iso-directory] [--smb-debug]");
+    Console.Error.WriteLine("Usage: PxeProbe <image.iso> <new-artifact-directory> [--ram MiB] [--port port] [--qemu-dir directory] [--wimboot file] [--disk-gib GiB | --dos-target] [--dos-startup file] [--share-iso-directory] [--smb-debug] [--boot-policy file]");
     return 2;
 }
 string? Option(string name)
@@ -44,6 +44,12 @@ var requiredBytes = (args.Contains("--share-iso-directory") ? 0 : new FileInfo(s
 if (new DriveInfo(spaceDirectory).AvailableFreeSpace < requiredBytes)
     throw new IOException("Insufficient free space for the source copy, target capacity, and 4 GiB reserve. Use --share-iso-directory or another artifact drive.");
 Directory.CreateDirectory(root);
+if (Option("--boot-policy") is { } policyFile)
+{
+    var policy = JsonSerializer.Deserialize<BootPolicyDocument>(File.ReadAllText(policyFile)) ?? throw new ArgumentException("Empty boot policy.");
+    BootPolicies.Validate(policy);
+    File.Copy(policyFile, Path.Combine(root, "boot-policies.json"));
+}
 if (args.Contains("--share-iso-directory"))
     Directory.CreateSymbolicLink(Path.Combine(root, "isos"), Path.GetDirectoryName(source)!);
 else
