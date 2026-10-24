@@ -27,6 +27,7 @@
     <EmbeddedResource Include="Services/Vm/dosmbr.bin" LogicalName="Everboot.DosMbr" />
     <InternalsVisibleTo Include="StreamingProbe" />
     <InternalsVisibleTo Include="VmProbe" />
+    <InternalsVisibleTo Include="PxeProbe" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.8" />
     <PackageReference Include="Microsoft.Extensions.Logging" Version="10.0.8" />
     <PackageReference Include="Microsoft.Extensions.Configuration.Binder" Version="10.0.8" />

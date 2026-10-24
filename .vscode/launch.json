@@ -2,6 +2,16 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": ".NET: PXE streaming probe (no attached media)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build:pxe-probe",
+      "program": "${workspaceFolder}/tools/PxeProbe/bin/Debug/net10.0/PxeProbe.dll",
+      "args": ["${input:pxeIso}", "${input:pxeOutput}", "--ram", "1024"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
       "name": ".NET: QEMU integration checks",
       "type": "coreclr",
       "request": "launch",
@@ -55,5 +65,9 @@
       "type": "coreclr",
       "request": "attach"
     }
+  ],
+  "inputs": [
+    { "id": "pxeIso", "type": "promptString", "description": "Path to the server-side live ISO" },
+    { "id": "pxeOutput", "type": "promptString", "description": "New directory for retained PXE test artifacts" }
   ]
 }

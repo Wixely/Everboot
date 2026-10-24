@@ -436,7 +436,9 @@ internal sealed class BootConfigGenerator
         var squashfs = entry.Metadata.Squashfs ?? string.Empty;
         var args = recipe.KernelArgs
             .Replace("{nfs-server}", NfsServer(authority), StringComparison.Ordinal)
-            .Replace("{nfs-options}", $"ro,nolock,vers=3,proto=tcp,mountproto=tcp,port={_options.Nfs.Port},mountport={_options.Nfs.MountPort},rsize=65536", StringComparison.Ordinal)
+            // klibc nfsmount in live initramfs accepts tcp, but not proto=,
+            // mountproto= or mountport=. It discovers MOUNT via portmapper/111.
+            .Replace("{nfs-options}", $"ro,nolock,vers=3,tcp,port={_options.Nfs.Port},rsize=65536", StringComparison.Ordinal)
             .Replace("{server}", authority, StringComparison.Ordinal)
             .Replace("{slug}", entry.Slug, StringComparison.Ordinal)
             .Replace("{file}", Uri.EscapeDataString(entry.FileName), StringComparison.Ordinal)

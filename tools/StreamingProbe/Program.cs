@@ -86,11 +86,14 @@ try
         Check(!Directory.EnumerateFiles(cabOutput).Any(), "cabinet extraction skips files outside the whitelist");
     }
     var generator = new BootConfigGenerator(catalog, options);
+    Check(DistroProfiles.Match("d-live 13.7.0 st", p => p == "live/filesystem.squashfs")?.Id == "debian-live", "current Debian Live volume label selects NFS-capable profile");
+    Check(DistroProfiles.Match("d-live 13.7.0 st", _ => false) is null, "Debian Live label alone does not establish a live filesystem");
     var menu = generator.GenerateIpxeMenu("192.0.2.1:8080");
     Check(menu.Contains("item --key 4 ubuntu-auto"), "single selection routes directly to Auto");
     Check(menu.Contains("netboot=nfs nfsroot=192.0.2.1:/ubuntu"), "Casper NFS recipe uses ISO export");
     Check(menu.Contains("boot=live components netboot=nfs"), "Debian Live NFS recipe");
-    Check(menu.Contains("mountport=32048") && menu.Contains("port=32049"), "custom NFS ports propagated");
+    Check(menu.Contains("nfsopts=ro,nolock,vers=3,tcp,port=32049,rsize=65536") && !menu.Contains("proto=") && !menu.Contains("mountport="),
+        "PXE NFS options work with klibc nfsmount; MOUNT is discovered via portmapper");
     Check(!menu.Contains(":incomplete-direct-"), "missing initrd excludes direct recipes");
     Check(menu.Split('\n').Where(l => l.StartsWith(':')).GroupBy(l => l.Trim()).All(g => g.Count() == 1), "reserved image name cannot collide with menu label");
     Check(!menu.Contains("netboot=httpfs"), "misleading Casper httpfs recipe removed");

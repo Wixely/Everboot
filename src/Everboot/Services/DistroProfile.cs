@@ -194,7 +194,7 @@ internal static class DistroProfiles
             DebianNetinstRecipes, null, null, null),
 
         new("debian-live", "Debian Live", DistroFamily.LinuxLive,
-            new Regex("^debian", Opt),
+            new Regex("^(debian|d-live(?:\\s|$))", Opt),
             new[] { "live/filesystem.squashfs" },
             LiveBootRecipes, "live", "*.squashfs", null),
 

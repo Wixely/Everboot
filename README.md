@@ -38,6 +38,11 @@ The web library shows streaming candidates, download-to-RAM methods, missing
 wimboot, NFS listener state, and NFS read counters. Counters are since startup,
 exclude HTTP kernel/initrd transfers, and update when the page is reloaded.
 
+Verified in an isolated BIOS PXE test: Debian Live 13.7.0 standard reached its
+login shell with 1,024 MiB RAM, a 2.02 GB ISO, and no attached disk/CD. The guest
+mounted the ISO-backed NFS export; the image was not modified or extracted.
+See [test evidence and remaining coverage](docs/pxe-streaming-investigation.md).
+
 ### Compatibility and limits
 
 - Ubuntu/Mint/Pop Casper layouts (`casper/vmlinuz` and `casper/initrd` or
@@ -47,8 +52,9 @@ exclude HTTP kernel/initrd transfers, and update when the page is reloaded.
   boot**. Renamed kernel paths, customized network initialization, distro-specific
   boot arguments, and multi-layer `layerfs-path` selection may need new profiles.
 - The OS needs working NIC and NFS client support in its initramfs. The recipes
-  use IPv4, NFSv3 over TCP, explicit mount/NFS ports, read-only mounts, and no
-  lock daemon. They do not use `fetch=`, `url=`, or `toram` on the streaming path.
+  use IPv4, NFSv3 over TCP, an explicit NFS port, MOUNT discovery through
+  portmapper on TCP 111, read-only mounts, and no lock daemon. They do not use
+  `fetch=`, `url=`, or `toram` on the streaming path.
 - Kernel, initrd, application working memory, reclaimable page cache, and the
   writable live-session overlay still consume RAM. The ISO itself does not need
   a reserved client RAM region. The server and network must remain available.
@@ -91,10 +97,13 @@ server is not a source for stock SMB1-only DOS/9x/XP clients. See the primary
 [MEMDISK compatibility notes](https://wiki.syslinux.org/wiki/index.php?title=MEMDISK)
 and [iPXE SAN boot documentation](https://ipxe.org/cmd/sanboot).
 
-The QEMU client below supplies persistent virtual hardware across this boundary.
-It is a desktop client, not yet a PXE-bootable VM appliance.
+**QEMU is the PXE test client.** The current investigation boots its NIC into
+Everboot with no ISO or disk attached, then tests continued OS-native network
+reads. See [PXE streaming investigation](docs/pxe-streaming-investigation.md).
+Earlier virtual-CD tests below are a separate experiment and do not establish
+PXE compatibility.
 
-### QEMU streaming client (experimental)
+### Earlier virtual-CD client experiment (not PXE validation)
 
 Run the **same executable on the computer that will display the VM**:
 

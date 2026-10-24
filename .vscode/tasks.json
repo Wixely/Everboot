@@ -2,6 +2,13 @@
   "version": "2.0.0",
   "tasks": [
     {
+      "label": "build:pxe-probe",
+      "type": "process",
+      "command": "dotnet",
+      "args": ["build", "${workspaceFolder}/tools/PxeProbe/PxeProbe.csproj"],
+      "problemMatcher": "$msCompile"
+    },
+    {
       "label": "build:vm-probe",
       "type": "process",
       "command": "dotnet",
