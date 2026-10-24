@@ -12,13 +12,14 @@ using Everboot.Services.Vm;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
-// QEMU is ONLY a PXE client here: no CD, disk, -kernel, or NBD is attached.
+// QEMU is ONLY a PXE client here: no CD, -kernel, or NBD is attached.
+// An optional newly created blank disk is exclusively an installation target.
 // Its isolated user-network DHCP stands in for the LAN's address server and
 // points NIC iPXE firmware at Everboot's real generated menu. ProxyDHCP/TFTP
 // broadcast discovery is a separate acceptance test.
 if (args.Length < 2)
 {
-    Console.Error.WriteLine("Usage: PxeProbe <image.iso> <new-artifact-directory> [--ram MiB] [--port port] [--qemu-dir directory] [--wimboot file] [--smb-debug]");
+    Console.Error.WriteLine("Usage: PxeProbe <image.iso> <new-artifact-directory> [--ram MiB] [--port port] [--qemu-dir directory] [--wimboot file] [--disk-gib GiB] [--smb-debug]");
     return 2;
 }
 string? Option(string name)
@@ -31,6 +32,8 @@ var root = Path.GetFullPath(args[1]);
 if (Directory.Exists(root)) throw new IOException("Use a new artifact directory; results are retained.");
 var ram = int.Parse(Option("--ram") ?? "1024");
 var port = int.Parse(Option("--port") ?? "38184");
+var diskGiB = int.Parse(Option("--disk-gib") ?? "0");
+if (diskGiB != 0 && diskGiB is < 16 or > 256) throw new ArgumentException("Disk size must be 16..256 GiB.");
 if (ram is < 128 or > 8192 || port is < 1024 or > 65530) throw new ArgumentException("Invalid RAM or port.");
 Directory.CreateDirectory(Path.Combine(root, "isos"));
 File.Copy(source, Path.Combine(root, "isos", "live.iso"));
@@ -82,10 +85,20 @@ try
     var reserve = new TcpListener(IPAddress.Loopback, 0); reserve.Start();
     var qmpPort = ((IPEndPoint)reserve.LocalEndpoint).Port; reserve.Stop();
     var executable = QemuLaunch.FindExecutable("qemu-system-x86_64", Option("--qemu-dir"));
+    var disk = Path.Combine(root, "target.qcow2");
+    if (diskGiB > 0)
+    {
+        // The root is new and no existing disk path is accepted.
+        using var create = Process.Start(QemuLaunch.Command(QemuLaunch.FindExecutable("qemu-img", Option("--qemu-dir")),
+            ["create", "-f", "qcow2", disk, diskGiB + "G"])) ?? throw new IOException("Could not create target disk.");
+        await create.WaitForExitAsync();
+        if (create.ExitCode != 0) throw new IOException("Target disk creation failed.");
+    }
     string[] qemuArgs = ["-name", "Everboot PXE test", "-machine", "pc", "-accel", "tcg", "-cpu", "max", "-m", ram.ToString(), "-smp", "2",
-        "-boot", "order=n,menu=on", "-nic", $"user,model=e1000,bootfile=http://10.0.2.2:{port}/boot.ipxe",
+        "-boot", diskGiB > 0 ? "once=n,order=c,menu=on" : "order=n,menu=on", "-nic", $"user,model=e1000,bootfile=http://10.0.2.2:{port}/boot.ipxe",
         "-display", "none", "-monitor", "none", "-serial", "file:" + Path.Combine(root, "serial.txt"),
         "-qmp", $"tcp:127.0.0.1:{qmpPort},server=on,wait=off"];
+    if (diskGiB > 0) qemuArgs = [.. qemuArgs, "-drive", $"file={disk.Replace(",", ",,")},format=qcow2,if=ide"];
     File.WriteAllText(Path.Combine(root, "qemu-arguments.json"), JsonSerializer.Serialize(qemuArgs, new JsonSerializerOptions { WriteIndented = true }));
     var start = QemuLaunch.Command(executable, qemuArgs); start.RedirectStandardError = true;
     qemu = Process.Start(start) ?? throw new IOException("Could not start QEMU.");
@@ -101,7 +114,7 @@ try
     using var writer = new StreamWriter(control.GetStream(), new UTF8Encoding(false)) { AutoFlush = true };
     await reader.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(20));
     await Qmp("qmp_capabilities");
-    Console.WriteLine($"PXE client: {ram} MiB RAM, no attached media. HTTP {port}; NFS {port + 1}; mount {port + 2}.");
+    Console.WriteLine($"PXE client: {ram} MiB RAM, {diskGiB} GiB blank target (0 = diskless), no installation media attached. HTTP {port}; NFS {port + 1}; mount {port + 2}.");
     Console.WriteLine("Commands: shot <name.png>, key <qcode[+qcode]>, text <ASCII>, stats, wait <seconds>, powerdown, quit");
     while (Console.ReadLine() is { } line && line != "quit")
     {

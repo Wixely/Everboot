@@ -19,7 +19,7 @@ source for the larger installation or live-system payload.
 | --- | --- | --- |
 | Debian Live / compatible Casper Linux | HTTP kernel/initrd, then guest-native NFS mounting the ISO's file tree and reading SquashFS on demand | NFS and recipes exist; actual PXE test below |
 | Linux with suitable HTTP filesystem support | Kernel/initrd plus `httpfs`/FUSE reading the image by HTTP ranges | Possible alternative; requires that support in the initramfs, not yet tested here |
-| Modern Windows installation | Load WinPE, initialize its NIC, then run Setup against the ISO-backed SMB share | Windows 7 WinPE automatically launches network-backed Setup in QEMU; complete PXE installation remains unverified |
+| Modern Windows installation | Load WinPE, initialize its NIC, then run Setup against the ISO-backed SMB share | Windows 7 SP1 x64 completed installation to desktop in BIOS QEMU with 1 GiB RAM; other versions and UEFI remain unverified |
 | Linux or Windows with suitable iSCSI boot support | Firmware starts from iSCSI; OS continues using its native initiator and boot configuration | Read-only ISO target exists; compatible OS handoff must be tested per image |
 | DOS / Windows 9x | Small DOS environment plus a network filesystem client or a DOS CD driver that can read the network-backed BIOS device | Research needed; the previous hardware-ATAPI CD driver cannot access a PXE client's nonexistent physical CD |
 | XP / 2000 / NT | OS-specific early network/storage support, or stage installation files onto a local target disk | No generic unmodified installer handoff established; stock clients cannot use Everboot's SMB2-only server |
@@ -38,7 +38,7 @@ reserve RAM for the entire ISO; it does not make an OS independent of RAM size.
 
 ## Actual network-boot test
 
-`tools/PxeProbe` launches QEMU with a NIC and **no attached CD or hard disk**, no
+By default, `tools/PxeProbe` launches QEMU with a NIC and **no attached CD or hard disk**, no
 `-kernel`, and no NBD device. NIC iPXE firmware receives Everboot's HTTP boot URL
 from QEMU's user-network DHCP. It loads Everboot's generated menu, kernel/initrd,
 and then connects to Everboot's NFS service from inside the guest.
@@ -104,7 +104,7 @@ network-boot evidence; synthetic protocol tests alone do not prove OS support.
 
 ### Windows PE result
 
-The Windows 7 SP1 x64 ISO supplied in `testisos` (3,320,903,680 bytes) now
+In the initial diskless test, the Windows 7 SP1 x64 ISO supplied in `testisos` (3,320,903,680 bytes)
 network-boots into WinPE and automatically starts Windows Setup from its
 ISO-backed SMB share. The BIOS QEMU client has 1,024 MiB RAM, an e1000 NIC,
 and no attached installation CD or hard disk. No guest-side command was needed
@@ -112,7 +112,8 @@ in the successful boot. The first Setup screen was reached after 5,496,710
 bytes of SMB reads, separate from the HTTP WinPE download.
 After selecting Next and Install now, Setup reached its license screen and
 the counter increased to 20,894,716 bytes. No target disk was attached and no
-installation was performed. Final release build passed with warnings as errors;
+installation was performed in that run. The subsequent full installation is
+documented below. Final release build passed with warnings as errors;
 regression checks passed 533 on Windows and 529 on Linux (Windows adds cabinet
 and native SSPI compatibility checks).
 
@@ -133,7 +134,7 @@ weakened. No SMB1 file operations were added.
 
 The test uses the existing WSL environment for the .NET server and QEMU. It
 does not establish Windows-host SMB/HTTP listener compatibility, UEFI Windows
-boot, support for later Windows releases, or a complete installation. Windows
+boot, or support for later Windows releases. Windows
 Setup remains interactive; Everboot does not automatically select or erase a
 target disk. Physical PXE hardware is unavailable, so emulated acceptance
 tests remain the development path.
@@ -155,6 +156,13 @@ Pass `--wimboot /path/to/wimboot` to PxeProbe to enable its loopback SMB service
 on TCP 445 and copy the loader into its temporary catalog. Linux needs permission
 to bind that port. `--smb-debug` enables command/status tracing, not authentication
 payload logging. Use a Windows installation ISO as the first argument.
+
+For an installation test, add `--disk-gib 32`. The probe creates a new sparse
+`target.qcow2` inside the new artifact directory and attaches it as an IDE hard
+disk. No existing disk path is accepted. QEMU boots from PXE once, then from
+the target disk on subsequent resets. The source ISO is never attached to the
+guest; Windows Setup must read its installation payload over SMB. Disk sizes
+from 16 to 256 GiB are accepted; omit the option for the original diskless test.
 
 ### Linux / shared probe
 
@@ -180,6 +188,44 @@ permission or network configuration was changed. The probe serves HTTP on all in
 host. NFS and QMP bind to loopback, which QEMU's user network exposes to its guest
 as `10.0.2.2`. This topology is for tests, not a LAN deployment configuration.
 
+### Complete Windows 7 installation
+
+On **2026-10-24**, the same Windows 7 Ultimate SP1 x64 image completed a fresh
+PXE-started installation to its desktop. This extends the earlier diskless
+Setup-screen test; the original ISO remained unchanged on the server.
+
+| Property | Observed result |
+| --- | --- |
+| Guest | QEMU 8.2, TCG, BIOS, e1000, 1,024 MiB RAM |
+| Source ISO | 3,320,903,680 bytes; never attached as a virtual CD or disk |
+| Installation target | New 32 GiB QCOW2 IDE disk, initially entirely unallocated |
+| Bootstrap | NIC iPXE, Everboot menu, HTTP WinPE, generated startup, native SMB |
+| Setup | Copy, expansion, features, updates, disk restarts, account setup, desktop all completed |
+| SMB payload reads | 3,334,602,010 bytes; cumulative reads include rereads and exclude HTTP WinPE transfers |
+| Image consistency | `qemu-img check` after clean guest shutdown: no errors |
+| Offline cold boot | New QEMU process, saved target disk only, `-nic none`, no ISO, Everboot stopped: returned to desktop |
+
+No SMB implementation changes were required beyond the previously committed
+WinPE compatibility fixes. One image selection started WinPE and network Setup;
+the ordinary Windows installer choices were still interactive. This is not an
+unattended installer or a diskless Windows runtime. A disposable local account
+was used, with no product key, activation, or update-service testing.
+Release build passed with warnings as errors, along with 533 Windows and 529
+Linux regression checks. Invalid target sizes were rejected before artifact
+creation. These checks do not establish Windows-host listener compatibility.
+
+Reproduce on a prepared host with QEMU, .NET 10, the separately supplied wimboot,
+and permissions for the probe's listeners:
+
+```text
+dotnet tools/PxeProbe/bin/Release/net10.0/PxeProbe.dll /path/to/windows7.iso /path/to/new-results --ram 1024 --wimboot /path/to/wimboot --disk-gib 32
+```
+
+Local evidence is retained under `artifacts/pxe-test/winpe-install1/`, including
+the initial PXE menu, blank-disk selection, file expansion, post-install desktop,
+QEMU arguments, and `nfs-samples.jsonl` (which also records SMB byte counts).
+ISOs, target disks, logs, and screenshots are not committed.
+
 ## Next work
 
 1. **Owner: development.** Extend the working Linux path to additional live images
@@ -187,9 +233,8 @@ as `10.0.2.2`. This topology is for tests, not a LAN deployment configuration.
 2. **Owner: development.** Extend emulated PXE acceptance coverage to
    ProxyDHCP/TFTP, restart/interruption, and multiple clients. Physical PXE
    hardware is unavailable; it is not a prerequisite for this work.
-3. **Owner: development. Recommended next action.** Add a fresh disposable QEMU
-   target disk and complete a Windows installation from the working network
-   Setup path; then validate a later Windows PE image and UEFI separately.
+3. **Owner: development. Recommended next action.** Validate a later Windows PE
+   image and UEFI separately using the fresh-disk PXE installation workflow.
 4. **Owner: development.** Prototype DOS network-media access independently of
    physical ATAPI devices; assess XP/2000 separately before claiming support.
 
