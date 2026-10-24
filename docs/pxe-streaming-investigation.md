@@ -19,7 +19,7 @@ source for the larger installation or live-system payload.
 | --- | --- | --- |
 | Debian Live / compatible Casper Linux | HTTP kernel/initrd, then guest-native NFS mounting the ISO's file tree and reading SquashFS on demand | NFS and recipes exist; actual PXE test below |
 | Linux with suitable HTTP filesystem support | Kernel/initrd plus `httpfs`/FUSE reading the image by HTTP ranges | Possible alternative; requires that support in the initramfs, not yet tested here |
-| Modern Windows installation | Load WinPE, initialize its NIC, then run Setup against the ISO-backed SMB share | WIM/file serving and SMB2 exist; automatic network initialization/source connection and complete PXE installation remain unverified |
+| Modern Windows installation | Load WinPE, initialize its NIC, then run Setup against the ISO-backed SMB share | Windows 7 WinPE automatically launches network-backed Setup in QEMU; complete PXE installation remains unverified |
 | Linux or Windows with suitable iSCSI boot support | Firmware starts from iSCSI; OS continues using its native initiator and boot configuration | Read-only ISO target exists; compatible OS handoff must be tested per image |
 | DOS / Windows 9x | Small DOS environment plus a network filesystem client or a DOS CD driver that can read the network-backed BIOS device | Research needed; the previous hardware-ATAPI CD driver cannot access a PXE client's nonexistent physical CD |
 | XP / 2000 / NT | OS-specific early network/storage support, or stage installation files onto a local target disk | No generic unmodified installer handoff established; stock clients cannot use Everboot's SMB2-only server |
@@ -102,6 +102,62 @@ network-boot evidence; synthetic protocol tests alone do not prove OS support.
 
 ## Reproduce
 
+### Windows PE result
+
+The Windows 7 SP1 x64 ISO supplied in `testisos` (3,320,903,680 bytes) now
+network-boots into WinPE and automatically starts Windows Setup from its
+ISO-backed SMB share. The BIOS QEMU client has 1,024 MiB RAM, an e1000 NIC,
+and no attached installation CD or hard disk. No guest-side command was needed
+in the successful boot. The first Setup screen was reached after 5,496,710
+bytes of SMB reads, separate from the HTTP WinPE download.
+After selecting Next and Install now, Setup reached its license screen and
+the counter increased to 20,894,716 bytes. No target disk was attached and no
+installation was performed. Final release build passed with warnings as errors;
+regression checks passed 533 on Windows and 529 on Linux (Windows adds cabinet
+and native SSPI compatibility checks).
+
+The generated wimboot chain supplies `winpeshl.ini` and `everboot.cmd` as
+small extra files. They appear in WinPE's RAM filesystem, run `wpeinit`, map
+the selected share to `Z:`, and launch `Z:\setup.exe`. Neither the ISO nor
+its on-disk `boot.wim` is rewritten. SMB-disabled/nonstandard-port configurations
+retain the ordinary WinPE boot without automatic source connection. A failure
+opens a troubleshooting shell; exiting it retries the connection.
+
+Real-client testing required fixes beyond the earlier SMB simulator coverage:
+SMB1-format negotiation upgrades to SMB2, raw NTLM and SPNEGO guest handshakes,
+Linux-independent ISO filename handling, and correctly sized directory-entry
+layouts. The server still provides **public guest access**, not authenticated
+identity: passwords are not validated or retained. Signing-required or
+guest-blocking clients are not supported by this path; no client policy was
+weakened. No SMB1 file operations were added.
+
+The test uses the existing WSL environment for the .NET server and QEMU. It
+does not establish Windows-host SMB/HTTP listener compatibility, UEFI Windows
+boot, support for later Windows releases, or a complete installation. Windows
+Setup remains interactive; Everboot does not automatically select or erase a
+target disk. Physical PXE hardware is unavailable, so emulated acceptance
+tests remain the development path.
+
+Local evidence: `artifacts/pxe-test/winpe9/setup.png`, `next.png`, `license.png`,
+`qemu-arguments.json`, and `nfs-samples.jsonl` (now also includes SMB byte counts).
+During iteration a server-side symbolic link reused the same ISO; the standard
+probe reproduction copies it instead. Some diagnostic runs therefore display
+the link length in the catalog; counter samples report the original ISO length.
+
+The test-only wimboot loader is upstream **v2.9.0**, downloaded from
+`https://github.com/ipxe/wimboot/releases/download/v2.9.0/wimboot`, SHA-256
+`5f067ccdc4d084d5bf77b6c853bd0f8402dfc2b4cd1b103d358993ae97fae8e3`.
+It remains a separately supplied GPL loader, not bundled source or a committed
+binary. No additional third-party source/library was added for the startup or
+SMB compatibility code.
+
+Pass `--wimboot /path/to/wimboot` to PxeProbe to enable its loopback SMB service
+on TCP 445 and copy the loader into its temporary catalog. Linux needs permission
+to bind that port. `--smb-debug` enables command/status tracing, not authentication
+payload logging. Use a Windows installation ISO as the first argument.
+
+### Linux / shared probe
+
 Build the probe, then run it on a host with .NET 10 and QEMU already installed:
 
 ```text
@@ -131,8 +187,9 @@ as `10.0.2.2`. This topology is for tests, not a LAN deployment configuration.
 2. **Owner: development.** Extend emulated PXE acceptance coverage to
    ProxyDHCP/TFTP, restart/interruption, and multiple clients. Physical PXE
    hardware is unavailable; it is not a prerequisite for this work.
-3. **Owner: development.** Automate WinPE network initialization and connection
-   to the ISO-backed installation share, then test a full Windows PXE install.
+3. **Owner: development. Recommended next action.** Add a fresh disposable QEMU
+   target disk and complete a Windows installation from the working network
+   Setup path; then validate a later Windows PE image and UEFI separately.
 4. **Owner: development.** Prototype DOS network-media access independently of
    physical ATAPI devices; assess XP/2000 separately before claiming support.
 
@@ -145,3 +202,7 @@ as `10.0.2.2`. This topology is for tests, not a LAN deployment configuration.
 - [iPXE SAN boot](https://ipxe.org/cmd/sanboot): firmware attachment and iBFT description.
 - [iPXE sanbootconf](https://ipxe.org/sanbootconf): XP/2003 iSCSI can require additional OS configuration/driver support; not a dependency added by this investigation.
 - [klibc nfsmount source](https://sources.debian.org/src/klibc/2.0.14-1/usr/kinit/nfsmount/): accepted mount options and portmapper discovery.
+- [iPXE wimboot injected files](https://ipxe.org/wimboot#injected_files): startup files can be supplied separately from the original WIM.
+- [Microsoft SMB2 multi-protocol negotiation](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/00a5a917-e5f9-4d31-a0d5-a5ee7209c61f): SMB1-formatted initial negotiation can select SMB2.
+- [Microsoft NTLM challenge format](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-nlmp/801a4681-8809-4be9-ab0d-61dcfe762786): challenge fields and target information.
+- [Microsoft directory query formats](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/10906442-294c-46d3-8515-c277efe1f752): the requested information class determines the directory-entry layout.

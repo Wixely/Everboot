@@ -146,6 +146,21 @@ internal sealed class HttpFileService : BackgroundService
                 return;
             }
 
+            if (path.StartsWith("/winpe/", StringComparison.Ordinal))
+            {
+                var parts = path.Split('/');
+                if (parts.Length != 4 || !_options.Smb.Enabled || _options.Smb.Port != 445 ||
+                    !_catalog.TryGetBySlug(parts[2], out var entry) || entry?.Metadata.WindowsFiles is null ||
+                    parts[3] is not ("winpeshl.ini" or "everboot.cmd"))
+                { response.StatusCode = 404; return; }
+                string script;
+                try { script = parts[3] == "winpeshl.ini" ? WinPeStartup.Shell : WinPeStartup.Script(ResolveAuthority(request), entry.Slug); }
+                catch (ArgumentException) { response.StatusCode = 400; return; }
+                response.Headers["Cache-Control"] = "no-store";
+                await WritePlainTextAsync(request, response, script, stoppingToken);
+                return;
+            }
+
             if (path.StartsWith("/isos/", StringComparison.Ordinal))
             {
                 var rawName = path["/isos/".Length..];

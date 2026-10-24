@@ -452,7 +452,7 @@ internal sealed class BootConfigGenerator
         sb.AppendLine("boot || goto methodfail");
     }
 
-    private static void EmitWimbootChain(StringBuilder sb, string authority, string slug, WindowsBootFiles wf)
+    private void EmitWimbootChain(StringBuilder sb, string authority, string slug, WindowsBootFiles wf)
     {
         sb.AppendLine("imgfree");
         if (wf.HasBiosChain && wf.HasEfiChain)
@@ -479,11 +479,16 @@ internal sealed class BootConfigGenerator
         }
     }
 
-    private static void EmitBiosChain(StringBuilder sb, string authority, string slug, WindowsBootFiles wf)
+    private void EmitBiosChain(StringBuilder sb, string authority, string slug, WindowsBootFiles wf)
     {
         sb.AppendLine($"set base http://{authority}/iso/{slug}");
         sb.AppendLine($"set wimboot-url http://{authority}/files/wimboot");
         sb.AppendLine("kernel ${wimboot-url} || goto methodfail");
+        if (_options.Smb.Enabled && _options.Smb.Port == 445)
+        {
+            sb.AppendLine($"initrd --name winpeshl.ini http://{authority}/winpe/{slug}/winpeshl.ini winpeshl.ini || goto methodfail");
+            sb.AppendLine($"initrd --name everboot.cmd http://{authority}/winpe/{slug}/everboot.cmd everboot.cmd || goto methodfail");
+        }
         sb.AppendLine($"initrd --name bootmgr     ${{base}}/{EncodePath(wf.Bootmgr!)}     bootmgr");
         sb.AppendLine($"initrd --name BCD         ${{base}}/{EncodePath(wf.Bcd!)}         BCD");
         sb.AppendLine($"initrd --name boot.sdi    ${{base}}/{EncodePath(wf.BootSdi!)}    boot.sdi");
@@ -491,11 +496,16 @@ internal sealed class BootConfigGenerator
         sb.AppendLine("boot || goto methodfail");
     }
 
-    private static void EmitEfiChain(StringBuilder sb, string authority, string slug, WindowsBootFiles wf)
+    private void EmitEfiChain(StringBuilder sb, string authority, string slug, WindowsBootFiles wf)
     {
         sb.AppendLine($"set base http://{authority}/iso/{slug}");
         sb.AppendLine($"set wimboot-url http://{authority}/files/wimboot");
         sb.AppendLine("kernel ${wimboot-url} || goto methodfail");
+        if (_options.Smb.Enabled && _options.Smb.Port == 445)
+        {
+            sb.AppendLine($"initrd --name winpeshl.ini http://{authority}/winpe/{slug}/winpeshl.ini winpeshl.ini || goto methodfail");
+            sb.AppendLine($"initrd --name everboot.cmd http://{authority}/winpe/{slug}/everboot.cmd everboot.cmd || goto methodfail");
+        }
         sb.AppendLine($"initrd --name BCD         ${{base}}/{EncodePath(wf.BcdEfi!)}     BCD");
         if (wf.BootmgrEfi is not null)
         {

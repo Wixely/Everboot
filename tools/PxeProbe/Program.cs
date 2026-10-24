@@ -6,6 +6,8 @@ using System.Text.Json;
 using Everboot.Configuration;
 using Everboot.Services;
 using Everboot.Services.Nfs;
+using Everboot.Services.Smb;
+using Microsoft.Extensions.Logging;
 using Everboot.Services.Vm;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -16,7 +18,7 @@ using Microsoft.Extensions.Options;
 // broadcast discovery is a separate acceptance test.
 if (args.Length < 2)
 {
-    Console.Error.WriteLine("Usage: PxeProbe <image.iso> <new-artifact-directory> [--ram MiB] [--port port] [--qemu-dir directory]");
+    Console.Error.WriteLine("Usage: PxeProbe <image.iso> <new-artifact-directory> [--ram MiB] [--port port] [--qemu-dir directory] [--wimboot file] [--smb-debug]");
     return 2;
 }
 string? Option(string name)
@@ -37,16 +39,25 @@ config.Http.BindAddress = "+"; config.Http.Port = port;
 config.Dhcp.Enabled = false; config.Dhcp.ServerAddress = "10.0.2.2";
 config.Nfs.BindAddress = "127.0.0.1";
 config.Nfs.Port = port + 1; config.Nfs.MountPort = port + 2; config.Nfs.PortmapperPort = 111;
-config.Iscsi.Enabled = false; config.Smb.Enabled = false;
+config.Iscsi.Enabled = false; config.Smb.Enabled = Option("--wimboot") is not null;
+config.Smb.BindAddress = "127.0.0.1";
+if (Option("--wimboot") is { } loader)
+{
+    Directory.CreateDirectory(Path.Combine(root, "tftp"));
+    File.Copy(loader, Path.Combine(root, "tftp", "wimboot"));
+}
+using var logs = LoggerFactory.Create(builder => builder.AddConsole().SetMinimumLevel(args.Contains("--smb-debug") ? LogLevel.Debug : LogLevel.Warning));
 var options = Options.Create(config);
 using var catalog = new BootCatalog(options, new IsoInspector(NullLogger<IsoInspector>.Instance), NullLogger<BootCatalog>.Instance);
 var status = new NfsStatus();
 using var http = new HttpFileService(NullLogger<HttpFileService>.Instance, catalog, new BootConfigGenerator(catalog, options), options, status);
 using var nfs = new NfsService(catalog, options, status, NullLogger<NfsService>.Instance);
+var shares = new SmbShareCatalog(catalog, options, logs.CreateLogger<SmbShareCatalog>());
+using var smb = new SmbService(logs.CreateLogger<SmbService>(), shares, options);
 Process? qemu = null;
 try
 {
-    await http.StartAsync(default); await nfs.StartAsync(default);
+    await http.StartAsync(default); await nfs.StartAsync(default); await smb.StartAsync(default);
     // BackgroundService.StartAsync can return before binding. Surface failures
     // before launching a guest rather than leaving it waiting on a dead server.
     using (var ready = new HttpClient { Timeout = TimeSpan.FromSeconds(2) })
@@ -55,11 +66,18 @@ try
         {
             if (http.ExecuteTask?.IsFaulted == true) await http.ExecuteTask;
             if (nfs.ExecuteTask?.IsFaulted == true) await nfs.ExecuteTask;
+            if (smb.ExecuteTask?.IsFaulted == true) await smb.ExecuteTask;
             try { (await ready.GetAsync($"http://localhost:{port}/boot.ipxe")).EnsureSuccessStatusCode(); if (status.Running) break; }
             catch (HttpRequestException) when (attempt < 20) { }
             if (attempt >= 20) throw new IOException("PXE services did not become ready; check HTTP permissions and portmapper TCP 111 permissions/conflicts.");
             await Task.Delay(100);
         }
+    }
+    if (config.Smb.Enabled)
+    {
+        using var smbReady = new TcpClient();
+        await smbReady.ConnectAsync(IPAddress.Loopback, config.Smb.Port);
+        if (smb.ExecuteTask?.IsFaulted == true) await smb.ExecuteTask;
     }
     var reserve = new TcpListener(IPAddress.Loopback, 0); reserve.Start();
     var qmpPort = ((IPEndPoint)reserve.LocalEndpoint).Port; reserve.Stop();
@@ -110,7 +128,7 @@ try
         }
         else if (parts[0] == "stats")
         {
-            var snapshot = new { status.Running, status.Reads, status.BytesRead, GuestRamMiB = ram, IsoBytes = new FileInfo(source).Length };
+            var snapshot = new { status.Running, status.Reads, status.BytesRead, SmbBytesRead = shares.BytesRead, GuestRamMiB = ram, IsoBytes = new FileInfo(source).Length };
             var json = JsonSerializer.Serialize(snapshot);
             File.AppendAllText(Path.Combine(root, "nfs-samples.jsonl"), json + Environment.NewLine);
             Console.WriteLine(json);
@@ -144,5 +162,5 @@ try
 finally
 {
     if (qemu is not null) { if (!qemu.HasExited) qemu.Kill(true); qemu.Dispose(); }
-    await nfs.StopAsync(default); await http.StopAsync(default);
+    await smb.StopAsync(default); await nfs.StopAsync(default); await http.StopAsync(default);
 }

@@ -34,6 +34,53 @@ using var service = new NfsService(catalog, options, status, NullLogger<NfsServi
 var checks = 0;
 try
 {
+    if (OperatingSystem.IsWindows())
+    {
+        using var auth = new System.Net.Security.NegotiateAuthentication(new System.Net.Security.NegotiateAuthenticationClientOptions
+        {
+            Package = "Negotiate", Credential = new NetworkCredential("everboot", "everboot"),
+            TargetName = "cifs/everboot", RequiredProtectionLevel = System.Net.Security.ProtectionLevel.None
+        });
+        var clientToken = auth.GetOutgoingBlob(Everboot.Services.Smb.SmbGuestSecurity.NegotiateToken, out var firstStatus);
+        var challengeToken = Everboot.Services.Smb.SmbGuestSecurity.Challenge();
+        var responseToken = auth.GetOutgoingBlob(challengeToken, out var secondStatus);
+        Check(firstStatus == System.Net.Security.NegotiateAuthenticationStatusCode.ContinueNeeded && secondStatus == System.Net.Security.NegotiateAuthenticationStatusCode.ContinueNeeded, "Windows SPNEGO guest challenge handshake progresses");
+        Check(responseToken is not null && Everboot.Services.Smb.SmbGuestSecurity.MessageType(responseToken) == 3, "Windows SSPI accepts server guest challenge");
+    }
+    Check(Everboot.Services.Smb.Smb2Session.MediaName(@"\sources\SETUP.EXE;1") == "SETUP.EXE", "ISO backslash names are platform independent and strip version suffix");
+    var directoryEntry = new Everboot.Services.Smb.SmbDirectoryEntry("setup.exe", false, 123, DateTimeOffset.UnixEpoch, DateTimeOffset.UnixEpoch, 1);
+    foreach (var format in new[] { (Class: 1, Offset: 64), (Class: 2, Offset: 68), (Class: 3, Offset: 94), (Class: 12, Offset: 12), (Class: 37, Offset: 104), (Class: 38, Offset: 80) })
+    {
+        var encoded = Everboot.Services.Smb.Smb2Session.EncodeDirectoryEntry(directoryEntry, (byte)format.Class);
+        Check(Encoding.Unicode.GetString(encoded.AsSpan(format.Offset)) == "setup.exe" && encoded.Length == format.Offset + 18, "SMB directory class has its own wire layout");
+    }
+    var challenge1 = Everboot.Services.Smb.SmbGuestSecurity.Challenge();
+    var challenge2 = Everboot.Services.Smb.SmbGuestSecurity.Challenge();
+    Check(Everboot.Services.Smb.SmbGuestSecurity.MessageType(challenge1) == 2, "SPNEGO challenge contains NTLM challenge message");
+    Check(!challenge1.SequenceEqual(challenge2), "guest compatibility handshake uses a fresh nonce");
+    Check(Everboot.Services.Smb.SmbGuestSecurity.MessageType("NTLMSSP\0"u8) == 0, "truncated security token cannot become a message type");
+    var der = new System.Formats.Asn1.AsnReader(challenge1, System.Formats.Asn1.AsnEncodingRules.DER);
+    var outer = der.ReadSequence(new System.Formats.Asn1.Asn1Tag(System.Formats.Asn1.TagClass.ContextSpecific, 1, true));
+    Check(!der.HasData && outer.ReadSequence().HasData, "SPNEGO challenge is bounded valid DER");
+    var dialectBytes = Encoding.ASCII.GetBytes("\u0002NT LM 0.12\0\u0002SMB 2.002\0");
+    var multiNegotiate = new byte[35 + dialectBytes.Length];
+    multiNegotiate[4] = 0x72;
+    BinaryPrimitives.WriteUInt16LittleEndian(multiNegotiate.AsSpan(33), (ushort)dialectBytes.Length);
+    dialectBytes.CopyTo(multiNegotiate, 35);
+    Check(Everboot.Services.Smb.Smb2Session.OffersSmb202(multiNegotiate), "Windows multi-protocol negotiate offers SMB2");
+    Check(!Everboot.Services.Smb.Smb2Session.OffersSmb202(multiNegotiate[..^1]), "truncated multi-protocol negotiate rejected");
+    multiNegotiate[^2] = (byte)'1';
+    Check(!Everboot.Services.Smb.Smb2Session.OffersSmb202(multiNegotiate), "SMB1-only or unknown dialect cannot select SMB2");
+    var peStartup = WinPeStartup.Script("192.0.2.1:8080", "windows-7");
+    Check(peStartup.Contains(@"net use Z: \\192.0.2.1\windows-7") && !peStartup.Contains(":8080"), "WinPE SMB source excludes HTTP port");
+    Check(peStartup.IndexOf("wpeinit", StringComparison.Ordinal) < peStartup.IndexOf("net use", StringComparison.Ordinal), "WinPE initializes networking before share connection");
+    Check(peStartup.Contains("if errorlevel 1 goto failed") && peStartup.Contains(@"Z:\setup.exe"), "WinPE launches source setup only after successful connection");
+    foreach (var badSlug in new[] { "x&whoami", "x%PATH%", "../x", "x\r\necho" })
+    {
+        var rejected = false;
+        try { WinPeStartup.Script("192.0.2.1", badSlug); } catch (ArgumentException) { rejected = true; }
+        Check(rejected, "WinPE rejects unsafe share name");
+    }
     var fakeIo = new byte[2500]; fakeIo[0] = (byte)'M'; fakeIo[1] = (byte)'Z';
     fakeIo[512] = (byte)'B'; fakeIo[513] = (byte)'J'; fakeIo[2046] = (byte)'M'; fakeIo[2047] = (byte)'S';
     var dosFiles = new Dictionary<string, byte[]> { ["COMMAND.COM"] = [1, 2, 3], ["IO.SYS"] = fakeIo };
@@ -107,6 +154,16 @@ try
     config.Iscsi.UseForSanboot = true; config.Iscsi.Port = 33260;
     Check(generator.GenerateIpxeMenu("192.0.2.1:8080").Contains("iscsi:192.0.2.1::33260::"), "iSCSI port included and handoff not suppressed");
 
+    var modern = new CDBuilder { UseJoliet = true, VolumeIdentifier = "Windows Test" };
+    foreach (var path in new[] { "bootmgr", "boot/bcd", "boot/boot.sdi", "sources/boot.wim" }) modern.AddFile(path, new byte[16]);
+    modern.Build(Path.Combine(root, "isos", "windows.iso"));
+    catalog.ForceRescan();
+    Check(generator.GenerateIpxeMenu("192.0.2.1:8080").Contains("/winpe/windows/everboot.cmd everboot.cmd || goto methodfail"), "Windows chain injects generated startup with failure handling");
+    config.Smb.Enabled = false;
+    Check(!generator.GenerateIpxeMenu("192.0.2.1:8080").Contains("/winpe/"), "disabled SMB preserves manual WinPE boot");
+    config.Smb.Enabled = true; config.Smb.Port = 3445;
+    Check(!generator.GenerateIpxeMenu("192.0.2.1:8080").Contains("/winpe/"), "nonstandard SMB port does not advertise automatic Windows source");
+    config.Smb.Port = 445;
     // Synthetic legacy media validates routing, not successful OS boot.
     var legacy = new CDBuilder { UseJoliet = true, VolumeIdentifier = "Legacy Test" };
     legacy.AddFile("win98/setup.exe", new byte[16]);

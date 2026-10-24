@@ -20,9 +20,9 @@ namespace Everboot.Services.Smb;
 /// QUERY_DIRECTORY/CLOSE/etc. command loop.
 ///
 /// Scope: SMB 2.0.2 only. No signing, no encryption, no oplocks, no leases,
-/// no DFS, no multi-channel. No NTLM auth - SESSION_SETUP returns success
-/// without inspecting credentials. Good enough for our own client simulator;
-/// real Windows clients may want NTLM, that's the next step if needed.
+/// no DFS, no multi-channel. Public guest access only: the NTLM/SPNEGO exchange
+/// provides client compatibility, not identity verification. Passwords are not
+/// validated, retained, or logged. Clients requiring signing are unsupported.
 /// </summary>
 internal sealed class Smb2Session
 {
@@ -36,6 +36,7 @@ internal sealed class Smb2Session
 
     private readonly Dictionary<ulong, SmbHandle> _handles = new();
     private readonly Dictionary<uint, SmbShare> _trees = new();
+    private bool _guestChallengeSent;
     private ulong _nextHandleId = 1;
     private uint _nextTreeId = 1;
 
@@ -142,6 +143,14 @@ internal sealed class Smb2Session
 
     private async Task ProcessAsync(NetworkStream stream, byte[] packet, CancellationToken ct)
     {
+        if (packet.Length >= 4 && packet.AsSpan(0, 4).SequenceEqual(new byte[] { 0xff, 0x53, 0x4d, 0x42 }))
+        {
+            // Windows starts with the SMB1-format multi-protocol negotiation.
+            // Only upgrade to SMB2; no SMB1 file operations are implemented.
+            if (!OffersSmb202(packet)) throw new IOException("Client did not offer SMB 2.002.");
+            await HandleNegotiateAsync(stream, new Smb2Header { Command = Smb2Command.Negotiate }, ReadOnlyMemory<byte>.Empty, ct);
+            return;
+        }
         Smb2Header header;
         try
         {
@@ -154,6 +163,7 @@ internal sealed class Smb2Session
         }
 
         var body = packet.AsMemory(Smb2Header.HeaderLength);
+        _logger.LogDebug("SMB request {Command}, id {Id}, next {Next}", header.Command, header.MessageId, header.NextCommand);
 
         switch (header.Command)
         {
@@ -203,8 +213,28 @@ internal sealed class Smb2Session
         }
     }
 
+    internal static bool OffersSmb202(ReadOnlySpan<byte> packet)
+    {
+        if (packet.Length < 35 || packet[4] != 0x72 || packet[32] != 0) return false;
+        var count = BinaryPrimitives.ReadUInt16LittleEndian(packet.Slice(33, 2));
+        if (count != packet.Length - 35) return false;
+        var dialects = packet[35..];
+        var supported = false;
+        while (!dialects.IsEmpty)
+        {
+            if (dialects[0] != 2) return false;
+            dialects = dialects[1..];
+            var end = dialects.IndexOf((byte)0);
+            if (end < 0) return false;
+            supported |= dialects[..end].SequenceEqual("SMB 2.002"u8);
+            dialects = dialects[(end + 1)..];
+        }
+        return supported;
+    }
+
     private async Task SendAsync(NetworkStream stream, Smb2Header response, byte[] body, CancellationToken ct)
     {
+        _logger.LogDebug("SMB response {Command}, id {Id}, status {Status:X8}", response.Command, response.MessageId, response.Status);
         var packet = new byte[Smb2Header.HeaderLength + body.Length];
         response.Buffer.CopyTo(packet, 0);
         body.CopyTo(packet, Smb2Header.HeaderLength);
@@ -231,7 +261,8 @@ internal sealed class Smb2Session
         // We don't bother parsing - just respond with our fixed dialect.
         var response = request.BuildResponse();
 
-        var resp = new byte[64];
+        var security = SmbGuestSecurity.NegotiateToken;
+        var resp = new byte[64 + security.Length];
         BinaryPrimitives.WriteUInt16LittleEndian(resp.AsSpan(0, 2), 65);                 // StructureSize
         BinaryPrimitives.WriteUInt16LittleEndian(resp.AsSpan(2, 2), 0);                  // SecurityMode = signing not required
         BinaryPrimitives.WriteUInt16LittleEndian(resp.AsSpan(4, 2), Smb2Dialect.Smb202); // DialectRevision
@@ -239,33 +270,50 @@ internal sealed class Smb2Session
         // 16-byte ServerGuid stays zero
         BinaryPrimitives.WriteUInt32LittleEndian(resp.AsSpan(24, 4), 0);                  // Capabilities
         BinaryPrimitives.WriteUInt32LittleEndian(resp.AsSpan(28, 4), 65536);              // MaxTransactSize
-        BinaryPrimitives.WriteUInt32LittleEndian(resp.AsSpan(32, 4), (uint)_options.MaxReadSize); // MaxReadSize
+        BinaryPrimitives.WriteUInt32LittleEndian(resp.AsSpan(32, 4), (uint)Math.Min(65536, _options.MaxReadSize)); // MaxReadSize
         BinaryPrimitives.WriteUInt32LittleEndian(resp.AsSpan(36, 4), 65536);              // MaxWriteSize
         BinaryPrimitives.WriteUInt64LittleEndian(resp.AsSpan(40, 8), (ulong)DateTimeOffset.UtcNow.ToFileTime()); // SystemTime
         BinaryPrimitives.WriteUInt64LittleEndian(resp.AsSpan(48, 8), 0);                  // ServerStartTime
-        BinaryPrimitives.WriteUInt16LittleEndian(resp.AsSpan(56, 2), 0);                  // SecurityBufferOffset
-        BinaryPrimitives.WriteUInt16LittleEndian(resp.AsSpan(58, 2), 0);                  // SecurityBufferLength
+        BinaryPrimitives.WriteUInt16LittleEndian(resp.AsSpan(56, 2), 128);                // SecurityBufferOffset
+        BinaryPrimitives.WriteUInt16LittleEndian(resp.AsSpan(58, 2), (ushort)security.Length); // SecurityBufferLength
+        security.CopyTo(resp, 64);
         BinaryPrimitives.WriteUInt32LittleEndian(resp.AsSpan(60, 4), 0);                  // Reserved2
 
         await SendAsync(stream, response, resp, ct).ConfigureAwait(false);
     }
 
     // ---------------------------------------------------------------------
-    // SESSION_SETUP - accept everything, no auth checks.
+    // SESSION_SETUP - public guest access, never authenticated identity.
     // ---------------------------------------------------------------------
 
     private async Task HandleSessionSetupAsync(NetworkStream stream, Smb2Header request, ReadOnlyMemory<byte> body, CancellationToken ct)
     {
-        var response = request.BuildResponse();
+        if (body.Length < 24) { await SendErrorAsync(stream, request, NtStatus.InvalidParameter, ct); return; }
+        if ((body.Span[3] & 2) != 0) { await SendErrorAsync(stream, request, NtStatus.NotSupported, ct); return; }
+        var offset = BinaryPrimitives.ReadUInt16LittleEndian(body.Span.Slice(12, 2)) - 64;
+        var length = BinaryPrimitives.ReadUInt16LittleEndian(body.Span.Slice(14, 2));
+        if (length > 0 && (offset < 24 || offset > body.Length - length))
+        { await SendErrorAsync(stream, request, NtStatus.InvalidParameter, ct); return; }
+        var type = length == 0 ? 0 : SmbGuestSecurity.MessageType(body.Span.Slice(offset, length));
+        if (length > 0 && type != 1 && !(type == 3 && _guestChallengeSent))
+        { await SendErrorAsync(stream, request, NtStatus.AccessDenied, ct); return; }
+        var challenge = type == 1;
+        _guestChallengeSent = challenge;
+        var token = length == 0 ? ReadOnlySpan<byte>.Empty : body.Span.Slice(offset, length);
+        var ntlmAt = token.IndexOf("NTLMSSP\0"u8);
+        var clientFlags = challenge && ntlmAt >= 0 && token.Length - ntlmAt >= 16
+            ? BinaryPrimitives.ReadUInt32LittleEndian(token[(ntlmAt + 12)..]) : 0;
+        var raw = token.StartsWith("NTLMSSP\0"u8);
+        _logger.LogDebug("SMB guest token type {Type}, raw {Raw}, flags {Flags:X8}", type, raw, clientFlags);
+        var security = challenge ? SmbGuestSecurity.Challenge(clientFlags, raw) : raw ? [] : SmbGuestSecurity.Complete;
+        var response = request.BuildResponse(challenge ? NtStatus.MoreProcessingRequired : NtStatus.Success);
         response.SessionId = DefaultSessionId;
-
-        var resp = new byte[9];
-        BinaryPrimitives.WriteUInt16LittleEndian(resp.AsSpan(0, 2), 9);   // StructureSize
-        BinaryPrimitives.WriteUInt16LittleEndian(resp.AsSpan(2, 2), 0);   // SessionFlags = 0
-        BinaryPrimitives.WriteUInt16LittleEndian(resp.AsSpan(4, 2), 72);  // SecurityBufferOffset (header+0)
-        BinaryPrimitives.WriteUInt16LittleEndian(resp.AsSpan(6, 2), 0);   // SecurityBufferLength
-        // (no security buffer follows)
-
+        var resp = new byte[8 + security.Length];
+        BinaryPrimitives.WriteUInt16LittleEndian(resp, 9);
+        BinaryPrimitives.WriteUInt16LittleEndian(resp.AsSpan(2), challenge ? (ushort)0 : (ushort)1); // guest
+        BinaryPrimitives.WriteUInt16LittleEndian(resp.AsSpan(4), 72);
+        BinaryPrimitives.WriteUInt16LittleEndian(resp.AsSpan(6), (ushort)security.Length);
+        security.CopyTo(resp, 8);
         await SendAsync(stream, response, resp, ct).ConfigureAwait(false);
     }
 
@@ -349,6 +397,7 @@ internal sealed class Smb2Session
             ? string.Empty
             : Encoding.Unicode.GetString(span.Slice(absOffset, nameLength)).Replace('\\', '/');
 
+        _logger.LogDebug("SMB open {Path}", name);
         var fs = share.FileSystem;
         var resolved = string.IsNullOrEmpty(name) ? "" : IsoFileResolver.Resolve(fs, name);
 
@@ -518,6 +567,7 @@ internal sealed class Smb2Session
             read += n;
         }
         if (read < toRead) Array.Resize(ref dataBuf, read);
+        _catalog.RecordRead(read);
 
         var response = request.BuildResponse();
         const int respHeaderLen = 16;
@@ -563,6 +613,7 @@ internal sealed class Smb2Session
         // StructureSize(2) InfoType(1) FileInfoClass(1) OutputBufferLength(4) ...
         var infoType = span[2];
         var fileInfoClass = span[3];
+        _logger.LogDebug("SMB query type {Type} class {Class} capacity {Capacity}", infoType, fileInfoClass, BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(4, 4)));
         // FileId at offset 24 (StructureSize(2)+1+1+4+2+2+4+4+4 = 24)
         var volatileId = BinaryPrimitives.ReadUInt64LittleEndian(span.Slice(32, 8));
 
@@ -665,7 +716,7 @@ internal sealed class Smb2Session
     private static byte[] BuildFileAllInformation(SmbHandle h)
     {
         // Basic(40) + Standard(24) + Internal(8) + EA(4) + Access(4) + Position(8) + Mode(4) + Alignment(4) + NameInformation
-        var name = h.Path.Replace('/', '\\');
+        var name = string.Empty; // MS-SMB2 recommends empty FileNameInformation in FileAllInformation.
         var nameBytes = Encoding.Unicode.GetBytes(name);
         var nameInfoLen = 4 + nameBytes.Length;
         var buf = new byte[40 + 24 + 8 + 4 + 4 + 8 + 4 + 4 + nameInfoLen];
@@ -674,7 +725,7 @@ internal sealed class Smb2Session
         BuildFileStandardInfo(h).CopyTo(buf, pos); pos += 24;
         BuildFileInternalInfo(h).CopyTo(buf, pos); pos += 8;
         pos += 4;  // EaInformation = 0
-        BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(pos, 4), 0x00120089); pos += 4; // AccessFlags (read-ish)
+        BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(pos, 4), 0x001200A9); pos += 4; // AccessFlags (read-ish)
         pos += 8;  // Position = 0
         BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(pos, 4), 0); pos += 4; // Mode
         BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(pos, 4), 0); pos += 4; // Alignment
@@ -686,13 +737,8 @@ internal sealed class Smb2Session
     private byte[] BuildFsAttributeInfo()
     {
         var name = Encoding.Unicode.GetBytes("NTFS");
-        var buf = new byte[8 + name.Length];
-        BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(0, 4), 0x000200FF); // attrs: read-only, case-preserving, etc.
-        BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(4, 4), 255);         // MaximumComponentNameLength
-        BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(8 - 4, 4), (uint)name.Length); // overwritten below
-        // Re-lay out properly:
         var realBuf = new byte[12 + name.Length];
-        BinaryPrimitives.WriteUInt32LittleEndian(realBuf.AsSpan(0, 4), 0x000200FF);
+        BinaryPrimitives.WriteUInt32LittleEndian(realBuf.AsSpan(0, 4), 0x00080006); // read-only, preserved names, Unicode
         BinaryPrimitives.WriteUInt32LittleEndian(realBuf.AsSpan(4, 4), 255);
         BinaryPrimitives.WriteUInt32LittleEndian(realBuf.AsSpan(8, 4), (uint)name.Length);
         name.CopyTo(realBuf, 12);
@@ -739,6 +785,8 @@ internal sealed class Smb2Session
         var span = body.Span;
         // StructureSize(2) FileInfoClass(1) Flags(1) FileIndex(4) FileId{P(8) V(8)} FileNameOffset(2) FileNameLength(2) OutputBufferLength(4) Buffer(1)
         var infoClass = span[2];
+        if (infoClass is not (1 or 2 or 3 or 12 or 37 or 38))
+        { await SendErrorAsync(stream, request, NtStatus.InvalidInfoClass, ct); return; }
         var flags = span[3];
         var volatileId = BinaryPrimitives.ReadUInt64LittleEndian(span.Slice(16, 8));
         var fileNameOffset = BinaryPrimitives.ReadUInt16LittleEndian(span.Slice(24, 2));
@@ -777,13 +825,15 @@ internal sealed class Smb2Session
             var entry = handle.Listing[handle.ListingPosition];
             var encoded = EncodeDirectoryEntry(entry, infoClass);
             var padded = (encoded.Length + (alignment - 1)) & ~(alignment - 1);
-            if (totalSize + padded > outputBufferLength && entries.Count > 0)
+            if (totalSize + padded > outputBufferLength)
             {
+                if (entries.Count == 0) { await SendErrorAsync(stream, request, NtStatus.BufferTooSmall, ct); return; }
                 break;
             }
             entries.Add(encoded);
             totalSize += padded;
             handle.ListingPosition++;
+            if ((flags & 2) != 0) break; // SMB2_RETURN_SINGLE_ENTRY
         }
 
         if (entries.Count == 0)
@@ -818,6 +868,7 @@ internal sealed class Smb2Session
     private static List<SmbDirectoryEntry> EnumerateDirectory(SmbShare share, string path, string pattern)
     {
         var list = new List<SmbDirectoryEntry>();
+
         var fs = share.FileSystem;
         var lookupPath = string.IsNullOrEmpty(path) ? "\\" : path;
 
@@ -825,13 +876,13 @@ internal sealed class Smb2Session
         {
             foreach (var dir in fs.GetDirectories(lookupPath))
             {
-                if (!MatchesPattern(System.IO.Path.GetFileName(dir.TrimEnd('\\', '/')), pattern)) continue;
+                if (!MatchesPattern(MediaName(dir), pattern)) continue;
                 DateTimeOffset created = DateTimeOffset.UtcNow;
                 DateTimeOffset modified = DateTimeOffset.UtcNow;
                 try { modified = new DateTimeOffset(fs.GetLastWriteTimeUtc(dir), TimeSpan.Zero); } catch { }
                 try { created = new DateTimeOffset(fs.GetCreationTimeUtc(dir), TimeSpan.Zero); } catch { created = modified; }
                 list.Add(new SmbDirectoryEntry(
-                    System.IO.Path.GetFileName(dir.TrimEnd('\\', '/')),
+                    MediaName(dir),
                     IsDirectory: true,
                     Length: 0,
                     Created: created,
@@ -840,7 +891,7 @@ internal sealed class Smb2Session
             }
             foreach (var file in fs.GetFiles(lookupPath))
             {
-                if (!MatchesPattern(System.IO.Path.GetFileName(file), pattern)) continue;
+                if (!MatchesPattern(MediaName(file), pattern)) continue;
                 long length = 0;
                 DateTimeOffset created = DateTimeOffset.UtcNow;
                 DateTimeOffset modified = DateTimeOffset.UtcNow;
@@ -848,7 +899,7 @@ internal sealed class Smb2Session
                 try { modified = new DateTimeOffset(fs.GetLastWriteTimeUtc(file), TimeSpan.Zero); } catch { }
                 try { created = new DateTimeOffset(fs.GetCreationTimeUtc(file), TimeSpan.Zero); } catch { created = modified; }
                 list.Add(new SmbDirectoryEntry(
-                    System.IO.Path.GetFileName(file),
+                    MediaName(file),
                     IsDirectory: false,
                     Length: length,
                     Created: created,
@@ -881,36 +932,30 @@ internal sealed class Smb2Session
         return pi == pattern.Length;
     }
 
-    private static byte[] EncodeDirectoryEntry(SmbDirectoryEntry entry, byte infoClass)
+    internal static string MediaName(string path)
     {
-        var nameBytes = Encoding.Unicode.GetBytes(entry.Name);
-        // We always emit FileIdBothDirectoryInformation - it's a superset of
-        // the other common classes and Windows clients tolerate it as long
-        // as we advertise it correctly.
-        return BuildFileIdBothDirInfo(entry, nameBytes);
+        var name = path.TrimEnd('\\', '/').Replace('\\', '/').Split('/')[^1];
+        return name.EndsWith(";1", StringComparison.Ordinal) ? name[..^2] : name;
     }
 
-    private static byte[] BuildFileIdBothDirInfo(SmbDirectoryEntry entry, byte[] nameBytes)
+    internal static byte[] EncodeDirectoryEntry(SmbDirectoryEntry entry, byte infoClass)
     {
-        // 104 bytes fixed header + filename
-        var buf = new byte[104 + nameBytes.Length];
-        BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(0, 4), 0); // NextEntryOffset (patched later)
-        BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(4, 4), 0); // FileIndex
-        BinaryPrimitives.WriteInt64LittleEndian(buf.AsSpan(8, 8), entry.Created.ToFileTime());
-        BinaryPrimitives.WriteInt64LittleEndian(buf.AsSpan(16, 8), entry.Modified.ToFileTime());
-        BinaryPrimitives.WriteInt64LittleEndian(buf.AsSpan(24, 8), entry.Modified.ToFileTime());
-        BinaryPrimitives.WriteInt64LittleEndian(buf.AsSpan(32, 8), entry.Modified.ToFileTime());
-        BinaryPrimitives.WriteInt64LittleEndian(buf.AsSpan(40, 8), entry.Length);
-        BinaryPrimitives.WriteInt64LittleEndian(buf.AsSpan(48, 8), entry.Length);
-        BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(56, 4), entry.FileAttributes);
-        BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(60, 4), (uint)nameBytes.Length);
-        BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(64, 4), 0); // EaSize
-        buf[68] = 0;                                                     // ShortNameLength
-        buf[69] = 0;                                                     // Reserved
-        // bytes 70-93 ShortName (24 bytes)
-        // bytes 94-95 Reserved2
-        BinaryPrimitives.WriteInt64LittleEndian(buf.AsSpan(96, 8), 0);   // FileId
-        nameBytes.CopyTo(buf, 104);
+        var nameBytes = Encoding.Unicode.GetBytes(entry.Name);
+        var fixedSize = infoClass switch { 1 => 64, 2 => 68, 3 => 94, 12 => 12, 37 => 104, 38 => 80, _ => throw new InvalidDataException("Unsupported directory information class.") };
+        var buf = new byte[fixedSize + nameBytes.Length];
+        if (infoClass == 12) BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(8), (uint)nameBytes.Length);
+        else
+        {
+            BinaryPrimitives.WriteInt64LittleEndian(buf.AsSpan(8), entry.Created.ToFileTime());
+            BinaryPrimitives.WriteInt64LittleEndian(buf.AsSpan(16), entry.Modified.ToFileTime());
+            BinaryPrimitives.WriteInt64LittleEndian(buf.AsSpan(24), entry.Modified.ToFileTime());
+            BinaryPrimitives.WriteInt64LittleEndian(buf.AsSpan(32), entry.Modified.ToFileTime());
+            BinaryPrimitives.WriteInt64LittleEndian(buf.AsSpan(40), entry.Length);
+            BinaryPrimitives.WriteInt64LittleEndian(buf.AsSpan(48), entry.Length);
+            BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(56), entry.FileAttributes);
+            BinaryPrimitives.WriteUInt32LittleEndian(buf.AsSpan(60), (uint)nameBytes.Length);
+        }
+        nameBytes.CopyTo(buf, fixedSize);
         return buf;
     }
 

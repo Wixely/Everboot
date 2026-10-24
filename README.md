@@ -12,7 +12,7 @@ Everboot bundles the moving pieces of a typical PXE pipeline into one process so
 | **TFTP server** | RFC 1350 read-only server with blksize/tsize options. Serves the small bootstrap binaries PXE firmware fetches first (`undionly.kpxe`, `snponly.efi`, `ipxe.efi`) out of `data/tftp/`. |
 | **HTTP file server** | Serves `/boot.ipxe` (the dynamic menu) and `/isos/<name>.iso` (the boot payloads) to iPXE. |
 | **iSCSI target** | Read-only target on TCP/3260. Exposes each `.iso` as a SCSI CD-ROM and each `.img` as a direct-access disk, with a stable IQN per image (`{IqnBase}:iso-<slug>`). Optional sanboot path — `Iscsi:UseForSanboot=true` switches menu sanboot entries from `http://...iso` to `iscsi:...`, which boots more reliably than HTTP-as-SAN. |
-| **SMB2 target** | Read-only SMB 2.0.2 server on TCP/445. Each ISO is exposed as a share named by its slug, backed by DiscUtils streaming the ISO contents on demand — never extracted to disk. Lets WinPE (after wimboot) do `net use Z: \\everboot\<slug>` and find `Z:\sources\install.wim` so Windows Setup completes. No NTLM auth (accept-anything) in this MVP — enough for the WinPE → install-source workflow. |
+| **SMB2 target** | Read-only SMB 2.0.2 server on TCP/445. Each ISO is exposed as a share named by its slug, backed by DiscUtils streaming the ISO contents on demand — never extracted to disk. Lets WinPE (after wimboot) do `net use Z: \\everboot\<slug>` and find `Z:\sources\install.wim` as the network installation source; complete PXE installation is not yet verified. Public guest-only access with NTLM/SPNEGO wire compatibility (no password verification) — enough for the WinPE → install-source workflow. |
 | **Boot config generator** | Renders the iPXE menu from the contents of `data/isos/` (both `*.iso` and `*.img`). |
 | **NFSv3 (experimental)** | Read-only ISO file trees over TCP, with embedded MOUNTv3 and portmapper v2. Compatible Linux live environments mount these trees after kernel handoff instead of downloading the whole payload into RAM. |
 
@@ -58,8 +58,11 @@ See [test evidence and remaining coverage](docs/pxe-streaming-investigation.md).
 - Kernel, initrd, application working memory, reclaimable page cache, and the
   writable live-session overlay still consume RAM. The ISO itself does not need
   a reserved client RAM region. The server and network must remain available.
-- Windows retains wimboot and the existing SMB source. Automatic WinPE-to-Setup
-  orchestration and a diskless Windows driver are **not implemented** here.
+- Windows uses wimboot plus generated startup files to initialize WinPE networking
+  and launch Setup from the ISO-backed SMB share when SMB is enabled on TCP 445.
+  Windows 7 SP1 reached Setup automatically in a BIOS QEMU PXE test with 1 GiB RAM.
+  Full installation and newer Windows compatibility remain unverified; a diskless
+  Windows driver is not implemented.
   Unknown/raw images retain compatibility paths; SAN boot alone does not prove
   that the OS can keep using the network disk after firmware handoff.
 - This server exposes a read-only ISO9660/Joliet or UDF view. It does not preserve

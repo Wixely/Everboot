@@ -18,6 +18,9 @@ internal sealed class SmbShareCatalog
     private readonly BootCatalog _bootCatalog;
     private readonly ILogger<SmbShareCatalog> _logger;
     private readonly SmbOptions _options;
+    private long _bytesRead;
+    public long BytesRead => System.Threading.Interlocked.Read(ref _bytesRead);
+    public void RecordRead(int bytes) => System.Threading.Interlocked.Add(ref _bytesRead, bytes);
 
     public SmbShareCatalog(BootCatalog bootCatalog, IOptions<EverbootOptions> options, ILogger<SmbShareCatalog> logger)
     {
