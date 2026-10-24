@@ -248,6 +248,38 @@ try
             Check(!vmCommand.UseShellExecute && vmCommand.ArgumentList.Contains(vmArgs[vmArgs.IndexOf("-blockdev") + 1]), "QEMU arguments bypass shell expansion");
             var vmHtml = VmClient.Html([vmImage with { Name = "<script>alert(1)</script>" }], "test-token", "<error>", 1);
             Check(!vmHtml.Contains("<script>") && vmHtml.Contains("&lt;error&gt;") && vmHtml.Contains(" disabled"), "VM library encodes remote names and disables duplicate launches");
+            Check(vmArgs.Contains("order=cd,once=d,menu=on") && QemuLaunch.Arguments(bridge.Block, "legacy", "disk.qcow2", true, false, false).Contains("order=cd,menu=on"),
+                "new machines boot installation CD once; saved machines prefer their hard disk");
+            var startup = Path.Combine(catalog.TftpDirectory, "startup.img");
+            File.WriteAllBytes(startup, payload[..4096]);
+            var sidecar = Path.Combine(root, "isos", "win98.iso.vm.json");
+            File.WriteAllText(sidecar, "{\"Media\":\"cd\",\"Profile\":\"legacy\",\"Floppy\":\"startup.img\"}");
+            var configured = JsonSerializer.Deserialize<VmImage[]>(await client.GetStringAsync("/catalog.json"))!.Single(i => i.Path == "/isos/win98.iso");
+            Check(configured.Problem is null && configured.Boot?.Floppy?.Size == 4096, "sidecar resolves startup media through catalog");
+            var asset = configured.Boot!.Floppy!;
+            var assetDirectory = Path.Combine(root, "asset-cache");
+            var staged = await VmRecipes.StageAsync(client.BaseAddress!, asset, assetDirectory, default);
+            Check(File.ReadAllBytes(staged).SequenceEqual(payload[..4096]), "startup media staged through HTTP with exact content");
+            File.WriteAllBytes(staged, new byte[4096]);
+            await VmRecipes.StageAsync(client.BaseAddress!, asset, assetDirectory, default);
+            Check(File.ReadAllBytes(staged).SequenceEqual(payload[..4096]), "corrupt local startup cache is repaired");
+            File.WriteAllBytes(startup, new byte[4096]);
+            try { await VmRecipes.StageAsync(client.BaseAddress!, asset, Path.Combine(root, "changed-cache"), default); throw new Exception("changed startup asset accepted"); }
+            catch (IOException) { checks++; }
+            Check(!Directory.EnumerateFiles(Path.Combine(root, "changed-cache"), "*.tmp", SearchOption.AllDirectories).Any(), "failed asset download leaves no temporary file");
+            foreach (var invalid in new[] { "{\"Media\":\"cd\",\"Floppy\":\"../outside.img\"}", "{\"Media\":\"disk\",\"Cpu\":\"host\"}", "{\"Media\":\"cd\",\"Arguments\":[\"-drive\"]}", "{\"Media\":\"cd\",\"Floppy\":\"missing.img\"}" })
+            {
+                File.WriteAllText(sidecar, invalid);
+                configured = JsonSerializer.Deserialize<VmImage[]>(await client.GetStringAsync("/catalog.json"))!.Single(i => i.Path == "/isos/win98.iso");
+                Check(configured.Problem is not null && configured.Boot is null, "invalid boot profile blocks only its image");
+                Check(!VmClient.Html([configured], "test", null, 0).Contains("<button"), "unusable boot profile has no Start button");
+            }
+            foreach (var invalid in new[] { asset with { Path = "//outside.example/file" }, asset with { Path = "/files/%2e%2e%2fsecret" }, asset with { Size = 5L << 20 }, asset with { Sha256 = "../unsafe" } })
+            {
+                try { VmRecipes.Validate(new("cd", Floppy: invalid)); throw new Exception("bad remote recipe accepted"); }
+                catch (ArgumentException) { checks++; }
+            }
+            File.Delete(sidecar);
         }
         finally { await http.StopAsync(default); }
     }

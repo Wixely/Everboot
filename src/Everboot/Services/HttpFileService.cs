@@ -125,9 +125,7 @@ internal sealed class HttpFileService : BackgroundService
 
             if (path == "/catalog.json")
             {
-                var images = _catalog.Entries.Select(e => new Vm.VmImage(e.DisplayName,
-                    "/isos/" + Uri.EscapeDataString(e.FileName), e.SizeBytes,
-                    Vm.QemuLaunch.RecommendedProfile(e.Metadata)));
+                var images = _catalog.Entries.Select(e => Vm.VmRecipes.Describe(e, _catalog.TftpDirectory));
                 var bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(images);
                 response.ContentType = "application/json; charset=utf-8";
                 response.Headers["Cache-Control"] = "no-store";

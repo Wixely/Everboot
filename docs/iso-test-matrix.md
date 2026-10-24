@@ -2,6 +2,9 @@
 
 Tested and reviewed: **2026-10-23**. Branch: `experimental/streaming-boot`.
 
+Follow-up: [installation and boot-profile validation](installation-validation.md)
+records the 2026-10-24 tests. The table below preserves the initial boot milestones.
+
 Nine supplied images were tested on Windows with QEMU 11.1.0, TCG, BIOS,
 IDE devices, and Everboot's HTTP-range-to-NBD bridge. Each run used a disposable
 QCOW2 disk or overlay. Original media was opened read-only; no host disks were

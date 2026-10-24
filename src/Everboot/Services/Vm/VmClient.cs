@@ -104,8 +104,8 @@ internal static class VmClient
                             running.Add((process, process.StandardError.ReadToEndAsync()));
                             notice = "Virtual machine started. Keep Everboot and the network available. Changes are saved in its local virtual disk.";
                         }
-                        catch (Exception ex) when (ex is IOException or ArgumentException or System.ComponentModel.Win32Exception or HttpRequestException or TaskCanceledException)
-                        { notice = ex.Message; }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or System.ComponentModel.Win32Exception or HttpRequestException or OperationCanceledException)
+                        { notice = ex is OperationCanceledException ? "Starting the virtual machine was cancelled or timed out. Check the server and try again." : ex.Message; }
                         response.StatusCode = 303; response.RedirectLocation = url;
                         continue;
                     }
@@ -138,6 +138,12 @@ internal static class VmClient
         for (var i = 0; i < images.Length; i++)
         {
             var image = images[i];
+            if (image.Problem is not null)
+            {
+                b.Append("<article><h2>").Append(H(image.Name)).Append("</h2><p role=\"status\">").Append(H(image.Problem))
+                    .Append("</p><small>Ask the server administrator to check this image's boot profile, then refresh.</small></article>");
+                continue;
+            }
             b.Append("<article><h2>").Append(H(image.Name)).Append("</h2><small>").Append((image.Size / 1048576d).ToString("F1", System.Globalization.CultureInfo.InvariantCulture)).Append(" MiB on server</small><form method=\"post\" action=\"/").Append(token).Append("/\"><input type=\"hidden\" name=\"image\" value=\"").Append(i).Append("\"><input type=\"hidden\" name=\"path\" value=\"").Append(H(image.Path)).Append("\"><label for=\"profile-").Append(i).Append("\">Virtual PC</label><select name=\"profile\" id=\"profile-").Append(i).Append("\">");
             foreach (var profile in QemuLaunch.Profiles)
                 b.Append("<option value=\"").Append(profile).Append('"').Append(profile == image.Profile ? " selected" : "").Append('>').Append(profile switch { "legacy" => "DOS / Windows 9x · 128 MB", "classic" => "Windows 2000 / XP · 512 MB", _ => "Newer systems · 2 GB" }).Append("</option>");

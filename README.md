@@ -18,7 +18,7 @@ Everboot bundles the moving pieces of a typical PXE pipeline into one process so
 
 ## Experimental streaming boot
 
-Branch: `experimental/streaming-boot`. Reviewed: **2026-10-23**.
+Branch: `experimental/streaming-boot`. Reviewed: **2026-10-24**.
 
 This branch embeds a read-only **NFSv3 server in the same C# process**. Each
 ISO becomes an export at `/<image-slug>`, backed directly by DiscUtils. There is
@@ -136,7 +136,9 @@ Ctrl+C stops the library and waits for the guest to close, preserving its stream
   These are compatibility starting points, not verified support for every OS.
 - Virtual disks persist under the current user's local application-data folder,
   `Everboot/machines`. Server URL, image size and preset select the saved machine.
-  Changing those selects a different disk. Raw overlays have a placeholder
+  Optional boot profiles and their asset hashes also select the saved machine.
+  Changing those selects a different disk. New CD machines boot installation
+  media first; later launches prefer their saved hard disk. Raw overlays have a placeholder
   backing filename; the launcher reconnects the current stream when opening
   them. Open them through Everboot, not as standalone QCOW2 files.
   Back up this directory with guests
@@ -166,11 +168,25 @@ memory. The original ISO remains on the server.
 installer, or recovery menu. Windows 7 and XP reached Setup, Ubuntu 10.10 Server
 reached its installer, SliTaz reached its desktop, and Super Grub2 reached its
 recovery menu. Serenity reached its desktop with a diagnostic direct-kernel
-configuration. Full installations remain unverified. See the
+configuration. See the
 [image-by-image test report](docs/iso-test-matrix.md) for failures, workarounds,
 streaming counters, and reproduction details. UDF bridge DVDs now use their UDF
 file tree consistently; classic Ubuntu Server and SliTaz receive suitable VM
 presets automatically.
+
+**Boot profiles, 2026-10-24:** a server-side `<image>.vm.json` can pair a CD with a
+startup floppy or boot a streamed disk with a separate kernel/initrd. Clients
+still click Start. Small startup assets are cached on disk and verified by
+SHA-256; the main image remains streamed. The supplied Serenity image reached
+its desktop through this normal launch path, and CD/floppy pairing reached the
+FreeDOS startup UI. See [configuration and examples](docs/vm-boot-profiles.md).
+Missing or invalid profiles block only the affected image with a repair message.
+
+**Installation tests, 2026-10-24:** Windows 7 SP1 and the supplied modified XP
+image completed installation to their local virtual disks using streamed ISOs.
+Both also passed a cold relaunch to their desktops. See the
+[installation report](docs/installation-validation.md) for evidence and limitations,
+including XP's optional Firefox installer requiring a newer CPU instruction set.
 
 The integration suite covers catalog metadata, range preflight, launch arguments
 and HTML escaping. Chromium verified the Start action, running/closed status,
@@ -202,15 +218,17 @@ HTTP, the NFS export backend, and the SMB share backend without starting QEMU.
 `--raw` treats a misleadingly named file as a disk image; `--qemu-args file.json`
 adds an explicit JSON string array of local diagnostic arguments. These switches
 belong to the test harness and are never accepted from the server catalog or
-client web UI. Scripts that install an OS still use disposable disks deleted
-when the probe exits; use the normal client for persistence tests.
+client web UI. By default, scripts use disposable disks deleted when the probe
+exits. `--machine-data`, a fixed `--port`, and a new `--server-data` folder allow
+installation and cold-relaunch tests with saved disks; see the
+[probe instructions](docs/vm-boot-profiles.md#repeatable-installation-tests).
 
-Remaining work (owner: maintainer): validate Windows 95/98/ME and NT/2000/XP
-setup through reboot and installation, support pairing nonbootable CDs with
-boot floppies, test network interruption/recovery, and build a small PXE client
+Remaining work (owner: maintainer): validate Windows 95/98/ME, NT/2000 and stock XP
+setup through reboot and installation, validate matching DOS startup media,
+test network interruption/recovery, and build a small PXE client
 appliance if booting without an existing host OS is required. Recommended next
-step: run a licensed Windows 98 or XP ISO with its corresponding preset and
-verify installation to the virtual disk. Secure Boot, UEFI guests, sound,
+step: pair the Windows 98 CD with a compatible startup disk and verify
+installation to the virtual disk. Secure Boot, UEFI guests, sound,
 acceleration and unattended installation are not implemented by this client.
 
 ### Configuration and deployment

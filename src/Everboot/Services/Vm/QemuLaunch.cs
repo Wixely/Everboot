@@ -6,7 +6,7 @@ using System.Text.Json;
 
 namespace Everboot.Services.Vm;
 
-internal sealed record VmImage(string Name, string Path, long Size, string Profile);
+internal sealed record VmImage(string Name, string Path, long Size, string Profile, VmBootRecipe? Boot = null, string? Problem = null);
 
 internal static class QemuLaunch
 {
@@ -71,7 +71,7 @@ internal static class QemuLaunch
         await stream.ReadExactlyAsync(new byte[512], ct);
     }
 
-    internal static List<string> Arguments(string streamedBlock, string profile, string disk, bool iso, bool floppy)
+    internal static List<string> Arguments(string streamedBlock, string profile, string disk, bool iso, bool floppy, bool firstBoot = true)
     {
         var (ram, cpu) = profile switch
         {
@@ -87,13 +87,15 @@ internal static class QemuLaunch
         {
             args.AddRange(["-device", "ide-cd,drive=media,bus=ide.1,unit=0"]);
         }
-        args.AddRange(["-blockdev", DiskBlock(disk, iso ? null : "media"), "-device", floppy ? "floppy,drive=disk" : "ide-hd,drive=disk,bus=ide.0,unit=0", "-boot", iso ? "order=c,once=d,menu=on" : floppy ? "order=a,menu=on" : "order=c,menu=on"]);
+        args.AddRange(["-blockdev", DiskBlock(disk, iso ? null : "media"), "-device", floppy ? "floppy,drive=disk" : "ide-hd,drive=disk,bus=ide.0,unit=0", "-boot", iso ? firstBoot ? "order=cd,once=d,menu=on" : "order=cd,menu=on" : floppy ? "order=a,menu=on" : "order=c,menu=on"]);
         return args;
     }
 
-    internal static async Task<Process> StartAsync(Uri server, VmImage image, string profile, string? qemuDir, string dataDir, HttpClient http, CancellationToken ct, int diagnosticPort = 0, IReadOnlyList<string>? diagnosticArguments = null)
+    internal static async Task<Process> StartAsync(Uri server, VmImage image, string profile, string? qemuDir, string dataDir, HttpClient http, CancellationToken ct, int diagnosticPort = 0, IReadOnlyList<string>? diagnosticArguments = null, string? diagnosticLocalMedia = null)
     {
         var media = MediaUri(server, image);
+        if (image.Problem is not null) throw new IOException(image.Problem);
+        if (image.Boot is not null) VmRecipes.Validate(image.Boot);
         if (image.Size < 512 || !Profiles.Contains(profile)) throw new ArgumentException("Invalid image or machine profile.");
         var qemu = FindExecutable("qemu-system-x86_64", qemuDir);
         var img = FindExecutable("qemu-img", System.IO.Path.GetDirectoryName(qemu));
@@ -102,13 +104,21 @@ internal static class QemuLaunch
         try
         {
             // URL, size and profile form a stable local machine identity. No server-controlled file paths.
-            var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(media.AbsoluteUri + "\n" + image.Size + "\n" + profile)))[..24];
+            var identity = media.AbsoluteUri + "\n" + image.Size + "\n" + profile;
+            if (image.Boot is not null) identity += "\n" + JsonSerializer.Serialize(image.Boot);
+            var key = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..24];
             var folder = System.IO.Path.Combine(dataDir, key);
             Directory.CreateDirectory(folder);
             var disk = System.IO.Path.Combine(folder, "disk.qcow2");
-            var iso = media.AbsolutePath.EndsWith(".iso", StringComparison.OrdinalIgnoreCase);
-            var floppy = !iso && image.Size <= 4 * 1024 * 1024;
-            if (!File.Exists(disk))
+            var iso = image.Boot is { } boot ? boot.Media == "cd" : media.AbsolutePath.EndsWith(".iso", StringComparison.OrdinalIgnoreCase);
+            var floppy = image.Boot is { } boot2 ? boot2.Media == "floppy" : !iso && image.Size <= 4 * 1024 * 1024;
+            if (floppy && image.Size > 4 * 1024 * 1024) throw new ArgumentException("Floppy image is too large.");
+            var firstBoot = !File.Exists(disk);
+            // Fetch and verify small boot assets before creating the persistent machine.
+            var staged = new Dictionary<string, string>();
+            foreach (var (role, asset) in new[] { ("kernel", image.Boot?.Kernel), ("initrd", image.Boot?.Initrd), ("floppy", image.Boot?.Floppy) })
+                if (asset is not null) staged[role] = await VmRecipes.StageAsync(server, asset, dataDir, ct);
+            if (firstBoot)
             {
                 var temp = disk + "." + Guid.NewGuid().ToString("N") + ".tmp";
                 try
@@ -130,7 +140,24 @@ internal static class QemuLaunch
                 }
                 finally { if (File.Exists(temp)) File.Delete(temp); }
             }
-            var start = Command(qemu, Arguments(bridge.Block, profile, disk, iso, floppy));
+            var mediaBlock = diagnosticPort > 0 && diagnosticLocalMedia is not null
+                ? JsonSerializer.Serialize(new Dictionary<string, object> { ["driver"] = "raw", ["node-name"] = "media", ["read-only"] = true,
+                    ["file"] = new { driver = "file", filename = Path.GetFullPath(diagnosticLocalMedia) } }) : bridge.Block;
+            var arguments = Arguments(mediaBlock, profile, disk, iso, floppy, firstBoot);
+            if (image.Boot?.Cpu == "intel-max") arguments[arguments.IndexOf("-cpu") + 1] = "max,vendor=GenuineIntel,vmx=off,-x2apic";
+            if (staged.TryGetValue("kernel", out var kernel)) arguments.AddRange(["-kernel", kernel]);
+            if (staged.TryGetValue("initrd", out var initrd)) arguments.AddRange(["-initrd", initrd]);
+            if (image.Boot?.CommandLine is { } commandLine) arguments.AddRange(["-append", commandLine]);
+            if (staged.TryGetValue("floppy", out var startupFloppy))
+            {
+                arguments.AddRange(["-blockdev", JsonSerializer.Serialize(new Dictionary<string, object>
+                {
+                    ["driver"] = "raw", ["node-name"] = "startup", ["read-only"] = true,
+                    ["file"] = new { driver = "file", filename = startupFloppy }
+                }), "-device", "floppy,drive=startup"]);
+                arguments[arguments.IndexOf("-boot") + 1] = firstBoot ? "order=cda,once=a,menu=on" : "order=cda,menu=on";
+            }
+            var start = Command(qemu, arguments);
             start.RedirectStandardError = true;
             if (diagnosticPort > 0)
             {

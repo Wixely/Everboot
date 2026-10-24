@@ -30,9 +30,12 @@ string? Option(string name)
 }
 
 // Real QEMU smoke test. Optional supplied ISO enables interactive guest validation.
-// Commands: shot <path.png|ppm>, key <qcode>, wait <seconds>, stats, quit. No shell evaluation.
-var root = Path.Combine(Path.GetTempPath(), "everboot-vm-probe-" + Guid.NewGuid().ToString("N"));
+// Commands below control only the disposable guest. No shell evaluation.
+var explicitServerData = Option("--server-data");
+var root = explicitServerData is null ? Path.Combine(Path.GetTempPath(), "everboot-vm-probe-" + Guid.NewGuid().ToString("N")) : Path.GetFullPath(explicitServerData);
+if (Directory.Exists(root)) throw new IOException("Probe server directory must be new.");
 Directory.CreateDirectory(Path.Combine(root, "isos"));
+Console.WriteLine("Probe server data: " + root);
 var source = args.FirstOrDefault();
 var file = source is null || args.Contains("--raw") ? "disk.img" : "boot.iso";
 if (source is null)
@@ -40,8 +43,17 @@ if (source is null)
     using var disk = File.Create(Path.Combine(root, "isos", file)); disk.SetLength(16 * 1024 * 1024);
 }
 else File.Copy(source, Path.Combine(root, "isos", file));
+if (Option("--recipe") is { } recipePath) File.Copy(recipePath, Path.Combine(root, "isos", file + ".vm.json"));
+if (Option("--support-dir") is { } supportDirectory)
+{
+    Directory.CreateDirectory(Path.Combine(root, "tftp"));
+    foreach (var assetPath in Directory.EnumerateFiles(supportDirectory))
+        File.Copy(assetPath, Path.Combine(root, "tftp", Path.GetFileName(assetPath)));
+}
 var reserve = new TcpListener(IPAddress.Loopback, 0); reserve.Start();
 var port = ((IPEndPoint)reserve.LocalEndpoint).Port; reserve.Stop();
+if (Option("--port") is { } portText) port = int.Parse(portText, System.Globalization.CultureInfo.InvariantCulture);
+var machineData = Option("--machine-data") is { } machinePath ? Path.GetFullPath(machinePath) : Path.Combine(root, "machines");
 var config = new EverbootOptions { DataDirectory = root, CatalogRescanIntervalSeconds = 0 };
 config.Http.BindAddress = "localhost"; config.Http.Port = port;
 var options = Options.Create(config);
@@ -79,13 +91,14 @@ try
         Console.WriteLine("PASS: Windows detection, HTTP WIM range, NFS export and SMB share agree on the WIM header.");
         return 0;
     }
-    var profile = Option("--profile") ?? QemuLaunch.RecommendedProfile(metadata);
-    var image = new VmImage(file, "/isos/" + file, new FileInfo(Path.Combine(root, "isos", file)).Length, profile);
+    var image = VmRecipes.Describe(catalog.Entries.Single(), catalog.TftpDirectory);
+    var profile = Option("--profile") ?? image.Profile;
     var qmpPort = new TcpListener(IPAddress.Loopback, 0); qmpPort.Start();
     var controlPort = ((IPEndPoint)qmpPort.LocalEndpoint).Port; qmpPort.Stop();
     var diagnosticArgs = Option("--qemu-args") is { } argsPath ? JsonSerializer.Deserialize<string[]>(File.ReadAllText(argsPath)) : null;
-    qemu = await QemuLaunch.StartAsync(uri, image, profile, null, Path.Combine(root, "machines"), http, default,
-        diagnosticPort: controlPort, diagnosticArguments: diagnosticArgs);
+    qemu = await QemuLaunch.StartAsync(uri, image, profile, null, machineData, http, default,
+        diagnosticPort: controlPort, diagnosticArguments: diagnosticArgs,
+        diagnosticLocalMedia: args.Contains("--local-media") ? source : null);
     var errors = qemu.StandardError.ReadToEndAsync();
     using var control = new TcpClient();
     for (var i = 0; !control.Connected; i++)
@@ -99,11 +112,11 @@ try
     var greeting = await input.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(20));
     if (greeting is null) throw new Exception("QEMU failed: " + await errors);
     await Qmp("qmp_capabilities");
-    Console.WriteLine("PASS: QEMU opened streamed media. Profile: " + profile + ". HTTP: " + uri);
+    Console.WriteLine("PASS: QEMU opened " + (args.Contains("--local-media") ? "LOCAL CONTROL media" : "streamed media") + ". Profile: " + profile + ". HTTP: " + uri);
     Console.WriteLine("PASS: " + await Qmp("query-block"));
     if (source is not null)
     {
-        Console.WriteLine("Interactive boot probe: shot <path.png|ppm>, key <qcode>, wait <seconds>, stats, quit");
+        Console.WriteLine("Interactive boot probe: shot <path.png|ppm>, key <qcode[+qcode]>, text <lowercase text>, wait <seconds>, stats [path.json], powerdown, reset, quit");
         using var script = Option("--script") is { } scriptPath ? File.OpenText(scriptPath) : null;
         var commands = (TextReader?)script ?? Console.In;
         while (commands.ReadLine() is { } command && command != "quit")
@@ -112,10 +125,27 @@ try
             if (parts[0] == "shot" && parts.Length == 2) Console.WriteLine(await Qmp("screendump", new { filename = Path.GetFullPath(parts[1]), format = Path.GetExtension(parts[1]) == ".png" ? "png" : "ppm" }));
             else if (parts[0] == "key" && parts.Length == 2)
             {
-                Console.WriteLine(await Qmp("send-key", new { keys = new[] { new { type = "qcode", data = parts[1] } } }));
+                Console.WriteLine(await Qmp("send-key", new { keys = parts[1].Split('+').Select(k => new { type = "qcode", data = k }).ToArray() }));
                 await Task.Delay(150); // QMP replies before key release; avoid dropping the next key.
             }
-            else if (parts[0] == "stats") Console.WriteLine(await Qmp("query-blockstats"));
+            else if (parts[0] == "stats")
+            {
+                var stats = await Qmp("query-blockstats");
+                if (parts.Length == 2) File.WriteAllText(parts[1], stats);
+                else Console.WriteLine(stats);
+            }
+            else if (parts[0] == "reset") Console.WriteLine(await Qmp("system_reset"));
+            else if (parts[0] == "powerdown") Console.WriteLine(await Qmp("system_powerdown"));
+            else if (parts[0] == "text" && parts.Length == 2)
+            {
+                foreach (var c in parts[1])
+                {
+                    if (!(c is >= 'a' and <= 'z' or >= '0' and <= '9' or ' ' or '-'))
+                        throw new ArgumentException("Probe text supports lowercase letters, digits, spaces and hyphens.");
+                    await Qmp("send-key", new { keys = new[] { new { type = "qcode", data = c == ' ' ? "spc" : c == '-' ? "minus" : c.ToString() } } });
+                    await Task.Delay(150);
+                }
+            }
             else if (parts[0] == "wait" && parts.Length == 2 && int.TryParse(parts[1], out var seconds) && seconds is >= 0 and <= 300)
                 await Task.Delay(TimeSpan.FromSeconds(seconds));
         }
@@ -126,7 +156,7 @@ try
     if (qemu.ExitCode != 0) throw new Exception(await errors);
     if (source is null)
     {
-        var overlay = Directory.GetFiles(Path.Combine(root, "machines"), "disk.qcow2", SearchOption.AllDirectories).Single();
+        var overlay = Directory.GetFiles(machineData, "disk.qcow2", SearchOption.AllDirectories).Single();
         using var reopenBridge = new HttpBlockBridge(new Uri(uri, image.Path), image.Size);
         var rebaseInfo = QemuLaunch.Command(QemuLaunch.FindExecutable("qemu-img", null), ["rebase", "-u", "-F", "raw", "-b", $"nbd://127.0.0.1:{reopenBridge.Port}", overlay]);
         using (var rebase = Process.Start(rebaseInfo)!) { await rebase.WaitForExitAsync(); if (rebase.ExitCode != 0) throw new IOException("Test backing update failed."); }
@@ -169,5 +199,5 @@ finally
 {
     if (qemu is not null) { if (!qemu.HasExited) qemu.Kill(true); qemu.Dispose(); }
     await server.StopAsync(default); catalog.Dispose();
-    Directory.Delete(root, true); // Only this probe's generated temporary tree.
+    if (explicitServerData is null) Directory.Delete(root, true); // Only this probe's generated temporary tree.
 }
