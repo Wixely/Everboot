@@ -2,6 +2,10 @@
 
 Test date: **2026-10-24**. Branch: `experimental/streaming-boot`.
 
+Later follow-up: [Everboot's own bootstrap](own-bootstrap.md) now reaches the
+Windows 98 graphical installer using files from that CD, without externally
+supplied startup media. The FreeDOS pairing result below records the earlier test.
+
 This follows the [initial ISO boot investigation](iso-test-matrix.md). Tests use
 Windows-hosted QEMU 11.1.0, software emulation, BIOS, IDE CD/disk devices, and no
 guest NIC. Installation targets are disposable, persistent QCOW2 disks; original
@@ -90,7 +94,7 @@ No operating system binaries or test screenshots are committed.
 
 ## Remaining work
 
-- **Recommended next action; owner: test maintainer (TBD).** Provide a compatible Windows 98 startup disk
-  and validate its installer with the new pairing mechanism.
+- **Recommended next action; owner: maintainer.** Complete a Windows 98 installation
+  using the generated startup support and verify its installed disk cold-boots.
 - **Owner: maintainer.** Test a separate physical server/client network, network
   interruption/recovery, and additional stock legacy installation media.

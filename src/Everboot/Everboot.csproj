@@ -23,6 +23,8 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Services/Vm/dos98.bin" LogicalName="Everboot.Dos98Boot" />
+    <EmbeddedResource Include="Services/Vm/dosmbr.bin" LogicalName="Everboot.DosMbr" />
     <InternalsVisibleTo Include="StreamingProbe" />
     <InternalsVisibleTo Include="VmProbe" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.8" />

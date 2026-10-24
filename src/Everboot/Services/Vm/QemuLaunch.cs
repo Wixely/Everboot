@@ -121,12 +121,18 @@ internal static class QemuLaunch
             if (firstBoot)
             {
                 var temp = disk + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                var raw = temp + ".raw";
                 try
                 {
                     var create = new List<string> { "create", "-f", "qcow2" };
                     if (!iso) create.AddRange(["-u", "-F", "raw", "-b", "everboot-streamed-source"]);
                     create.Add(temp);
                     create.Add(iso ? profile == "legacy" ? "2G" : profile == "classic" ? "8G" : "32G" : image.Size.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                    if (image.Boot?.InitialDisk == "fat16")
+                    {
+                        DosInstallDisk.Create(raw);
+                        create = ["convert", "-f", "raw", "-O", "qcow2", raw, temp];
+                    }
                     var info = Command(img, create);
                     info.RedirectStandardError = true; info.RedirectStandardOutput = true; info.CreateNoWindow = true;
                     using var process = Process.Start(info) ?? throw new IOException("Could not start qemu-img.");
@@ -138,7 +144,11 @@ internal static class QemuLaunch
                     if (process.ExitCode != 0) throw new IOException($"Could not create VM disk (exit {process.ExitCode}). Check the QEMU installation and writable VM data folder. " + await error);
                     File.Move(temp, disk, false);
                 }
-                finally { if (File.Exists(temp)) File.Delete(temp); }
+                finally
+                {
+                    if (File.Exists(temp)) File.Delete(temp);
+                    if (File.Exists(raw)) File.Delete(raw);
+                }
             }
             var mediaBlock = diagnosticPort > 0 && diagnosticLocalMedia is not null
                 ? JsonSerializer.Serialize(new Dictionary<string, object> { ["driver"] = "raw", ["node-name"] = "media", ["read-only"] = true,

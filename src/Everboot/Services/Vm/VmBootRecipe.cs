@@ -6,12 +6,13 @@ namespace Everboot.Services.Vm;
 
 internal sealed record VmAsset(string Path, long Size, string Sha256);
 internal sealed record VmBootRecipe(string Media, string? Cpu = null, string? CommandLine = null,
-    VmAsset? Kernel = null, VmAsset? Initrd = null, VmAsset? Floppy = null);
+    VmAsset? Kernel = null, VmAsset? Initrd = null, VmAsset? Floppy = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] string? InitialDisk = null);
 
 // Server-owned sidecar: filenames refer only to the existing support-file folder.
 // It cannot contain QEMU options, URLs, host paths, or device passthrough commands.
 internal sealed record VmRecipeFile(string Media, string? Profile = null, string? Cpu = null,
-    string? CommandLine = null, string? Kernel = null, string? Initrd = null, string? Floppy = null);
+    string? CommandLine = null, string? Kernel = null, string? Initrd = null, string? Floppy = null, string? InitialDisk = null);
 
 internal static class VmRecipes
 {
@@ -48,7 +49,7 @@ internal static class VmRecipes
                 return new("/files/" + Uri.EscapeDataString(name), info.Length, Convert.ToHexString(SHA256.HashData(stream)));
             }
             var recipe = new VmBootRecipe(spec.Media, spec.Cpu, spec.CommandLine,
-                Asset(spec.Kernel, 128L << 20), Asset(spec.Initrd, 256L << 20), Asset(spec.Floppy, 4L << 20));
+                Asset(spec.Kernel, 128L << 20), Asset(spec.Initrd, 256L << 20), Asset(spec.Floppy, 4L << 20), spec.InitialDisk);
             Validate(recipe);
             return image with { Profile = spec.Profile ?? image.Profile, Boot = recipe };
         }
@@ -67,6 +68,8 @@ internal static class VmRecipes
     {
         if (recipe.Media is not ("cd" or "disk" or "floppy")) throw new ArgumentException("Unknown boot media type.");
         if (recipe.Cpu is not (null or "intel-max")) throw new ArgumentException("Unknown CPU compatibility setting.");
+        if (recipe.InitialDisk is not (null or "fat16") || recipe.InitialDisk is not null && recipe.Media != "cd")
+            throw new ArgumentException("FAT16 initialization requires CD media.");
         if (recipe.CommandLine?.Length > 4096 || recipe.CommandLine?.Any(c => char.IsControl(c)) == true)
             throw new ArgumentException("Invalid kernel command line.");
         if (recipe.Kernel is null && (recipe.Initrd is not null || recipe.CommandLine is not null))

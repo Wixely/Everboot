@@ -1,5 +1,11 @@
 # Third-Party Notices
 
+The optional Windows 98 preparation command uses Windows' built-in cabinet API.
+It extracts DOS components from the user's own CD; Microsoft and Oak binaries
+are not distributed with Everboot. The embedded 512-byte DOS bootstrap and MBR
+are original Everboot code under this project's MIT license, with assembly
+sources in `tools/boot`. See `docs/own-bootstrap.md` for the file provenance.
+
 Everboot is distributed under the MIT License (see `LICENSE`). It links against
 the following third-party components. All are under permissive (non-copyleft)
 licenses; full license text for each can be retrieved from the linked source.

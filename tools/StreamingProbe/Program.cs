@@ -34,6 +34,57 @@ using var service = new NfsService(catalog, options, status, NullLogger<NfsServi
 var checks = 0;
 try
 {
+    var fakeIo = new byte[2500]; fakeIo[0] = (byte)'M'; fakeIo[1] = (byte)'Z';
+    fakeIo[512] = (byte)'B'; fakeIo[513] = (byte)'J'; fakeIo[2046] = (byte)'M'; fakeIo[2047] = (byte)'S';
+    var dosFiles = new Dictionary<string, byte[]> { ["COMMAND.COM"] = [1, 2, 3], ["IO.SYS"] = fakeIo };
+    var dosImage = DosStartupImage.Build(dosFiles);
+    Check(dosImage.Length == 1474560 && dosImage[510] == 0x55 && dosImage[511] == 0xaa, "own bootstrap produces a standard FAT12 boot image");
+    Check(Encoding.ASCII.GetString(dosImage, 19 * 512, 11) == "IO      SYS" && dosImage.AsSpan(33 * 512, fakeIo.Length).SequenceEqual(fakeIo), "DOS loader is first and contiguous regardless of input order");
+    Check(dosImage.AsSpan(512, 4608).SequenceEqual(dosImage.AsSpan(5120, 4608)), "startup FAT copies agree");
+    Check((BinaryPrimitives.ReadUInt16LittleEndian(dosImage.AsSpan(515)) & 0xfff) == 3 &&
+        (BinaryPrimitives.ReadUInt16LittleEndian(dosImage.AsSpan(521)) & 0xfff) == 0xfff, "startup FAT links terminate after the loader's final cluster");
+    try { DosStartupImage.Build(new Dictionary<string, byte[]> { ["IO.SYS"] = new byte[2048] }); throw new Exception("bad DOS loader accepted"); }
+    catch (IOException) { checks++; }
+    try { DosStartupImage.Build(new Dictionary<string, byte[]> { ["IO.SYS"] = fakeIo, ["LARGE.BIN"] = new byte[1474560] }); throw new Exception("oversized DOS disk accepted"); }
+    catch (IOException) { checks++; }
+    var initialDisk = Path.Combine(root, "initial-dos.raw");
+    DosInstallDisk.Create(initialDisk);
+    using (var file = File.OpenRead(initialDisk))
+    {
+        var sector = new byte[512]; file.ReadExactly(sector);
+        Check(file.Length == 2L << 30 && sector[446] == 0x80 && sector[450] == 0x0e && BinaryPrimitives.ReadInt32LittleEndian(sector.AsSpan(454)) == 63, "new DOS install disk has a bounded active FAT16 partition");
+        file.Position = 63L * 512; file.ReadExactly(sector);
+        var clusters = (DosInstallDisk.PartitionSectors - 1 - 512 - 32) / sector[13];
+        Check(clusters is >= 4085 and < 65525 && sector[510] == 0x55 && sector[511] == 0xaa && BinaryPrimitives.ReadInt32LittleEndian(sector.AsSpan(28)) == 63, "FAT16 geometry and hidden sectors are consistent");
+    }
+    try { DosInstallDisk.Create(initialDisk); throw new Exception("existing disk overwritten"); }
+    catch (IOException) { checks++; }
+    File.Delete(initialDisk);
+    Check(!JsonSerializer.Serialize(new VmBootRecipe("cd")).Contains("InitialDisk"), "adding disk initialization preserves old profile identities");
+    try { VmRecipes.Validate(new("disk", InitialDisk: "fat16")); throw new Exception("raw source initialization accepted"); }
+    catch (ArgumentException) { checks++; }
+    if (OperatingSystem.IsWindows())
+    {
+        var cab = Path.Combine(root, "test.cab");
+        // Uncompressed, single-folder CAB fixture; no Microsoft executable bytes.
+        var cabName = Encoding.ASCII.GetBytes("COMMAND.COM\0");
+        var dataOffset = 44 + 16 + cabName.Length;
+        using (var writer = new BinaryWriter(File.Create(cab)))
+        {
+            writer.Write(Encoding.ASCII.GetBytes("MSCF")); writer.Write(0); writer.Write(dataOffset + 8 + 3); writer.Write(0);
+            writer.Write(44); writer.Write(0); writer.Write((byte)3); writer.Write((byte)1);
+            writer.Write((ushort)1); writer.Write((ushort)1); writer.Write((ushort)0); writer.Write((ushort)0); writer.Write((ushort)0);
+            writer.Write(dataOffset); writer.Write((ushort)1); writer.Write((ushort)0);
+            writer.Write(3); writer.Write(0); writer.Write((ushort)0); writer.Write((ushort)0); writer.Write((ushort)0); writer.Write((ushort)32); writer.Write(cabName);
+            writer.Write(0); writer.Write((ushort)3); writer.Write((ushort)3); writer.Write(new byte[] { 1, 2, 3 });
+        }
+        var cabOutput = Path.Combine(root, "cab-output"); Directory.CreateDirectory(cabOutput);
+        WindowsCabinet.Extract(cab, cabOutput, new(StringComparer.OrdinalIgnoreCase) { "COMMAND.COM" });
+        Check(File.ReadAllBytes(Path.Combine(cabOutput, "COMMAND.COM")).SequenceEqual(new byte[] { 1, 2, 3 }), "Windows cabinet API extracts exact whitelisted bytes");
+        File.Delete(Path.Combine(cabOutput, "COMMAND.COM"));
+        WindowsCabinet.Extract(cab, cabOutput, new(StringComparer.OrdinalIgnoreCase) { "IO.SYS" });
+        Check(!Directory.EnumerateFiles(cabOutput).Any(), "cabinet extraction skips files outside the whitelist");
+    }
     var generator = new BootConfigGenerator(catalog, options);
     var menu = generator.GenerateIpxeMenu("192.0.2.1:8080");
     Check(menu.Contains("item --key 4 ubuntu-auto"), "single selection routes directly to Auto");

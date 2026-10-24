@@ -45,7 +45,9 @@ fallback; the firmware boot menu is also available.
 The Windows 98 test CD needs a compatible DOS boot environment and CD driver.
 The pairing mechanism was tested using FreeDOS 1.4, reaching its startup UI.
 That does not establish that FreeDOS can complete Windows 98 Setup. No Microsoft
-startup disk or OS files are bundled.
+startup disk or OS files are bundled. A later [Everboot-owned bootstrap](own-bootstrap.md)
+now reaches Windows 98 Setup using startup files extracted from the supplied CD,
+without requiring a separately supplied startup disk.
 
 ## Serenity 2022 filesystem image
 
@@ -81,6 +83,7 @@ Other Serenity versions may need different settings.
 | `Initrd` | Optional support filename, up to 256 MiB; requires `Kernel` |
 | `CommandLine` | Optional kernel command line, up to 4096 characters; requires `Kernel` |
 | `Floppy` | Optional startup filename, up to 4 MiB; requires `cd` media and cannot be combined with `Kernel` |
+| `InitialDisk` | Optional `fat16`: initialize only a new private installation disk with a roughly 2 GiB FAT16 partition; requires `cd` media |
 
 Names are single filenames, without directories, traversal, or filesystem links.
 Unknown fields and invalid combinations are rejected. Missing files disable
@@ -123,6 +126,6 @@ the source directly instead of streaming it, and must not count as a streaming
 success. `--recipe file.vm.json --support-dir C:/test/support` copies a profile
 and its support folder into the probe server for a real launch test.
 
-Remaining work, owner: maintainer: verify a compatible Windows 98 startup disk
+Remaining work, owner: maintainer: verify the generated Windows 98 startup support
 through installation, extend profiles only with measured compatibility needs,
 and test interruption/recovery on a separate physical client/server network.

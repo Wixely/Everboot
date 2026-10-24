@@ -182,6 +182,13 @@ its desktop through this normal launch path, and CD/floppy pairing reached the
 FreeDOS startup UI. See [configuration and examples](docs/vm-boot-profiles.md).
 Missing or invalid profiles block only the affected image with a repair message.
 
+**Nonbootable Windows 98 CDs:** `Everboot --prepare-win98 <image.iso> <data/tftp>`
+now creates startup support from the user's CD using our own bootstrap and the
+Windows cabinet API. The supplied retail CD reached graphical Setup, with a
+streamed CD and a newly initialized virtual FAT16 disk. No external startup
+floppy or third-party bootloader is bundled. Preparation currently requires
+Windows; full installation remains unverified. See [instructions and limits](docs/own-bootstrap.md).
+
 **Installation tests, 2026-10-24:** Windows 7 SP1 and the supplied modified XP
 image completed installation to their local virtual disks using streamed ISOs.
 Both also passed a cold relaunch to their desktops. See the
@@ -227,7 +234,7 @@ Remaining work (owner: maintainer): validate Windows 95/98/ME, NT/2000 and stock
 setup through reboot and installation, validate matching DOS startup media,
 test network interruption/recovery, and build a small PXE client
 appliance if booting without an existing host OS is required. Recommended next
-step: pair the Windows 98 CD with a compatible startup disk and verify
+step: use the generated Windows 98 startup support and verify
 installation to the virtual disk. Secure Boot, UEFI guests, sound,
 acceleration and unattended installation are not implemented by this client.
 
