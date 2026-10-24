@@ -2,6 +2,10 @@
 
 Tested: **2026-10-24**, branch `experimental/streaming-boot`.
 
+Later follow-up: [Windows 98 PXE investigation](windows98-pxe.md) reaches the
+graphical Setup product-key screen without an attached CD. The original
+virtual-CD experiment described below remains separate from that PXE result.
+
 The supplied Windows 98 SE retail CD has no El Torito boot record. It now
 reaches **graphical Windows 98 Setup** using Everboot-generated startup support,
 with its original CD streamed over the normal HTTP/NBD path. No separately

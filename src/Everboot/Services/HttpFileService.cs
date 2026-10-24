@@ -29,6 +29,10 @@ internal sealed class HttpFileService : BackgroundService
     private readonly BootConfigGenerator _generator;
     private readonly EverbootOptions _options;
     private readonly NfsStatus _nfsStatus;
+    private long _dosBytesRead;
+    public long DosBytesRead => Interlocked.Read(ref _dosBytesRead);
+    private readonly Lock _dosGate = new();
+    private readonly Dictionary<string, (long Size, DateTime Modified, DosSourceDisk Disk)> _dosDisks = [];
 
     public HttpFileService(
         ILogger<HttpFileService> logger,
@@ -180,6 +184,12 @@ internal sealed class HttpFileService : BackgroundService
                 var slug = rest[..slash];
                 var innerPath = Uri.UnescapeDataString(rest[(slash + 1)..]);
                 await WriteIsoContentAsync(request, response, slug, innerPath, stoppingToken).ConfigureAwait(false);
+                return;
+            }
+
+            if (path.StartsWith("/dos-source/", StringComparison.Ordinal))
+            {
+                await WriteDosSourceAsync(request, response, path["/dos-source/".Length..], stoppingToken);
                 return;
             }
 
@@ -631,6 +641,48 @@ internal sealed class HttpFileService : BackgroundService
 
         _logger.LogInformation("Served file://{Name} bytes {Start}-{End}/{Total} to {Remote}",
             name, start, end, total, request.RemoteEndPoint);
+    }
+
+    private async Task WriteDosSourceAsync(HttpListenerRequest request, HttpListenerResponse response, string slug, CancellationToken ct)
+    {
+        var entry = _catalog.Entries.FirstOrDefault(e => e.Slug == slug && e.Metadata.WindowsEra == WindowsBootEra.NinexClass);
+        if (entry is null || !File.Exists(Path.Combine(_catalog.TftpDirectory, entry.FileName + ".dos.img")))
+        { response.StatusCode = 404; return; }
+        using var iso = File.OpenRead(entry.FullPath);
+        using var fs = IsoFileSystem.Open(iso, entry.Metadata.Layout) ?? throw new IOException("ISO filesystem missing.");
+        DosSourceDisk disk;
+        var modified = File.GetLastWriteTimeUtc(entry.FullPath);
+        lock (_dosGate)
+        {
+            if (!_dosDisks.TryGetValue(entry.FullPath, out var cached) || cached.Size != iso.Length || cached.Modified != modified)
+            {
+                // Bound cached metadata even when the catalog changes repeatedly.
+                if (_dosDisks.Count >= 16) _dosDisks.Clear();
+                cached = (iso.Length, modified, new DosSourceDisk(fs));
+                _dosDisks[entry.FullPath] = cached;
+            }
+            disk = cached.Disk;
+        }
+        long start = 0, end = DosSourceDisk.Length - 1;
+        var partial = TryParseRange(request.Headers["Range"], DosSourceDisk.Length, ref start, ref end);
+        if (partial && (start > end || start < 0 || start >= DosSourceDisk.Length))
+        { response.StatusCode = 416; response.AddHeader("Content-Range", $"bytes */{DosSourceDisk.Length}"); return; }
+        response.StatusCode = partial ? 206 : 200;
+        response.ContentType = "application/octet-stream";
+        response.ContentLength64 = end - start + 1;
+        response.AddHeader("Accept-Ranges", "bytes");
+        response.AddHeader("Cache-Control", "no-store");
+        if (partial) response.AddHeader("Content-Range", $"bytes {start}-{end}/{DosSourceDisk.Length}");
+        if (request.HttpMethod == "HEAD") return;
+        var buffer = new byte[CopyBufferSize];
+        while (start <= end)
+        {
+            var count = (int)Math.Min(buffer.Length, end - start + 1);
+            disk.Read(fs, start, buffer.AsSpan(0, count));
+            await response.OutputStream.WriteAsync(buffer.AsMemory(0, count), ct);
+            Interlocked.Add(ref _dosBytesRead, count);
+            start += count;
+        }
     }
 
     private static DiscFileSystem? OpenFileSystem(Stream isoStream, IsoLayout layout)

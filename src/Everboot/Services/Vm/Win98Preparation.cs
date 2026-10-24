@@ -11,14 +11,15 @@ internal static class Win98Preparation
     {
         if (args.Length != 3)
         {
-            Console.Error.WriteLine("Usage: Everboot --prepare-win98 <image.iso> <server-data/tftp>");
+            Console.Error.WriteLine("Usage: Everboot --prepare-win98[-pxe] <image.iso> <server-data/tftp>");
             return 2;
         }
         try
         {
-            var profile = Prepare(args[1], args[2]);
-            Console.WriteLine("Prepared startup support from this CD. Refresh the VM library and click Start.");
-            Console.WriteLine("Profile: " + profile);
+            var pxe = args[0] == "--prepare-win98-pxe";
+            var profile = Prepare(args[1], args[2], pxe);
+            Console.WriteLine(pxe ? "Prepared experimental DOS PXE support. Original ISO unchanged." : "Prepared startup support from this CD. Refresh the VM library and click Start.");
+            Console.WriteLine((pxe ? "Startup asset: " : "Profile: ") + profile);
             return 0;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or PlatformNotSupportedException)
@@ -28,13 +29,13 @@ internal static class Win98Preparation
         }
     }
 
-    internal static string Prepare(string image, string supportDirectory)
+    internal static string Prepare(string image, string supportDirectory, bool pxe = false)
     {
         if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("Preparation currently requires Windows; generated startup support can also be served from Linux.");
         image = Path.GetFullPath(image);
         supportDirectory = Path.GetFullPath(supportDirectory);
-        var sidecar = image + ".vm.json";
-        if (File.Exists(sidecar)) throw new IOException("A boot profile already exists. Preserve or move it before preparing this image.");
+        var sidecar = pxe ? Path.Combine(supportDirectory, Path.GetFileName(image) + ".dos.img") : image + ".vm.json";
+        if (File.Exists(sidecar)) throw new IOException("Prepared support already exists. Preserve or move it before preparing this image.");
         var metadata = new IsoInspector(NullLogger<IsoInspector>.Instance).Inspect(image);
         using var source = File.OpenRead(image);
         using var fs = IsoFileSystem.Open(source, metadata.Layout) ?? throw new IOException("An ISO filesystem is required.");
@@ -68,6 +69,16 @@ internal static class Win98Preparation
             files.Add("MSDOS.SYS", Text("[Options]\nBootGUI=0\nLogo=0\n"));
             files.Add("CONFIG.SYS", Text("DEVICE=A:\\HIMEM.SYS /TESTMEM:OFF\nDEVICE=A:\\OAKCDROM.SYS /D:EVBCD\nFILES=40\nBUFFERS=20\nLASTDRIVE=Z\n"));
             files.Add("AUTOEXEC.BAT", Text("@ECHO OFF\nA:\\MSCDEX.EXE /D:EVBCD /L:R\nIF ERRORLEVEL 1 GOTO FAILED\nECHO Everboot: starting Setup from your streamed CD.\nR:\\WIN98\\SETUP.EXE\nGOTO END\n:FAILED\nECHO Everboot: CD unavailable. Check the server and restart.\n:END\nECHO Disk tools: A:\\FDISK.EXE and A:\\FORMAT.COM\n"));
+            if (pxe)
+            {
+                // Validate the projection before writing any support asset.
+                _ = new DosSourceDisk(fs);
+                files["CONFIG.SYS"] = Text("DEVICE=A:\\HIMEM.SYS /TESTMEM:OFF\nFILES=40\nBUFFERS=20\nLASTDRIVE=Z\n");
+                files["AUTOEXEC.BAT"] = Text("@ECHO OFF\nECHO Everboot experimental DOS PXE\nECHO Expected layout: C: local FAT target, D: network source.\nDIR D:\\WIN98\\SETUP.EXE\nECHO Reading a cabinet from the network source...\nCOPY /B D:\\WIN98\\BASE5.CAB NUL\nECHO To start interactive Setup, run D:\\WIN98\\SETUP.EXE /IS\nECHO This bootstrap does not format or install automatically.\n");
+                Directory.CreateDirectory(supportDirectory);
+                WriteNew(sidecar, DosStartupImage.Build(files));
+                return sidecar;
+            }
             var disk = DosStartupImage.Build(files);
             var assetName = "everboot-dos98-" + Convert.ToHexString(SHA256.HashData(disk))[..24] + ".img";
             Directory.CreateDirectory(supportDirectory);

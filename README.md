@@ -45,6 +45,13 @@ See [test evidence and remaining coverage](docs/pxe-streaming-investigation.md).
 
 ### Compatibility and limits
 
+- Windows 98 SE now has an opt-in DOS PXE prototype: a small generated startup
+  image plus a read-only FAT16 view streamed directly from the original ISO.
+  It reached graphical Setup and the product-key screen with 128 MiB RAM and
+  no attached CD. Full installation and first reboot remain unverified; the
+  diagnostic workflow still requires manually starting Setup. See
+  [Windows 98 PXE evidence and preparation](docs/windows98-pxe.md).
+
 - Ubuntu/Mint/Pop Casper layouts (`casper/vmlinuz` and `casper/initrd` or
   `initrd.lz`) and Debian Live-family layouts (`live/vmlinuz`, `live/initrd.img`)
   receive experimental NFS recipes when their live filesystem is present.

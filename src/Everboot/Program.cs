@@ -21,7 +21,7 @@ public static class Program
         try
         {
             if (args.FirstOrDefault() == "--client") return await Services.Vm.VmClient.RunAsync(args);
-            if (args.FirstOrDefault() == "--prepare-win98") return Services.Vm.Win98Preparation.Run(args);
+            if (args.FirstOrDefault() is "--prepare-win98" or "--prepare-win98-pxe") return Services.Vm.Win98Preparation.Run(args);
             host = BuildHost(args);
 
             var lifetimeLogger = host.Services.GetRequiredService<ILoggerFactory>().CreateLogger("Everboot");

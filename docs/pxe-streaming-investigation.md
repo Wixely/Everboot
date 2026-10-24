@@ -21,7 +21,7 @@ source for the larger installation or live-system payload.
 | Linux with suitable HTTP filesystem support | Kernel/initrd plus `httpfs`/FUSE reading the image by HTTP ranges | Possible alternative; requires that support in the initramfs, not yet tested here |
 | Modern Windows installation | Load WinPE, initialize its NIC, then run Setup against the ISO-backed SMB share | Windows 7 SP1 x64 completed installation to desktop in BIOS QEMU with 1 GiB RAM; other versions and UEFI remain unverified |
 | Linux or Windows with suitable iSCSI boot support | Firmware starts from iSCSI; OS continues using its native initiator and boot configuration | Read-only ISO target exists; compatible OS handoff must be tested per image |
-| DOS / Windows 9x | Small DOS environment plus a network filesystem client or a DOS CD driver that can read the network-backed BIOS device | Research needed; the previous hardware-ATAPI CD driver cannot access a PXE client's nonexistent physical CD |
+| DOS / Windows 9x | Small DOS startup plus a synthesized FAT16 source streamed through iPXE BIOS disk reads | Windows 98 SE reached graphical Setup and product-key screen over PXE with 128 MiB RAM; complete installation remains unverified |
 | XP / 2000 / NT | OS-specific early network/storage support, or stage installation files onto a local target disk | No generic unmodified installer handoff established; stock clients cannot use Everboot's SMB2-only server |
 | Arbitrary unknown ISO | Attempt firmware boot only if its OS can continue accessing the source | Cannot promise generic streaming support |
 
@@ -235,8 +235,9 @@ ISOs, target disks, logs, and screenshots are not committed.
    hardware is unavailable; it is not a prerequisite for this work.
 3. **Owner: development. Recommended next action.** Validate a later Windows PE
    image and UEFI separately using the fresh-disk PXE installation workflow.
-4. **Owner: development.** Prototype DOS network-media access independently of
-   physical ATAPI devices; assess XP/2000 separately before claiming support.
+4. **Owner: development.** Continue the [Windows 98 PXE prototype](windows98-pxe.md)
+   through installation and first reboot with a valid media key; assess local
+   source staging and XP/2000 separately before claiming support.
 
 ## Primary references
 

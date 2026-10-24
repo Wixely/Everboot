@@ -166,7 +166,9 @@ try
     config.Smb.Port = 445;
     // Synthetic legacy media validates routing, not successful OS boot.
     var legacy = new CDBuilder { UseJoliet = true, VolumeIdentifier = "Legacy Test" };
-    legacy.AddFile("win98/setup.exe", new byte[16]);
+    legacy.AddFile("win98\\setup.exe", new byte[16]);
+    legacy.AddFile("win98\\base5.cab", payload[..70001]);
+    legacy.AddFile("win98\\empty.txt", []);
     legacy.Build(Path.Combine(root, "isos", "win98.iso"));
     var xp = new CDBuilder { UseJoliet = true, VolumeIdentifier = "XP Test" };
     xp.AddFile("i386/setupldr.bin", new byte[16]);
@@ -198,6 +200,42 @@ try
     Check(Method("dos-memdisk").IndexOf("iseq ${platform} pcbios", StringComparison.Ordinal) < Method("dos-memdisk").IndexOf("kernel http", StringComparison.Ordinal), "MEMDISK rejects UEFI before downloading");
     Check(menu.Contains("Everboot SMB2 shares cannot be used by stock DOS/9x"), "legacy share limitation explained");
     Check(menu.Split('\n').Where(l => l.StartsWith(':')).GroupBy(l => l.Trim()).All(g => g.Count() == 1), "legacy methods have unique labels");
+
+    using (var source = File.OpenRead(Path.Combine(root, "isos", "win98.iso")))
+    using (var fs = new CDReader(source, true))
+    {
+        var dos = new DosSourceDisk(fs);
+        var header = new byte[640 * 512]; dos.Read(fs, 0, header);
+        Check(header[510] == 0x55 && header[511] == 0xaa && header[450] == 0x0e, "DOS source exposes an LBA FAT16 partition");
+        Check(header.AsSpan(64 * 512, 256 * 512).SequenceEqual(header.AsSpan(320 * 512, 256 * 512)), "DOS source FAT copies agree");
+        var listing = new byte[32768]; dos.Read(fs, 608 * 512, listing);
+        var found = false;
+        for (var offset = 64; offset < listing.Length && listing[offset] != 0; offset += 32)
+        {
+            if (Encoding.ASCII.GetString(listing, offset, 11) != "BASE5   CAB") continue;
+            found = true;
+            var cluster = BinaryPrimitives.ReadUInt16LittleEndian(listing.AsSpan(offset + 26));
+            var size = BinaryPrimitives.ReadUInt32LittleEndian(listing.AsSpan(offset + 28));
+            var result = new MemoryStream();
+            while (cluster < 0xfff8)
+            {
+                var block = new byte[32768]; dos.Read(fs, 608L * 512 + (cluster - 2L) * block.Length, block);
+                result.Write(block);
+                cluster = BinaryPrimitives.ReadUInt16LittleEndian(header.AsSpan(64 * 512 + cluster * 2));
+            }
+            Check(size == 70001 && result.ToArray().AsSpan(0, (int)size).SequenceEqual(payload.AsSpan(0, 70001)), "FAT chain reconstructs original multi-cluster ISO payload");
+            Check(result.ToArray().AsSpan((int)size).IndexOfAnyExcept((byte)0) < 0, "DOS file allocation padding is zero");
+        }
+        Check(found, "DOS directory exposes original setup cabinet");
+        var tail = new byte[512]; dos.Read(fs, DosSourceDisk.Length - 512, tail);
+        Check(tail.All(b => b == 0), "unallocated virtual disk reads as zero without a backing image");
+        try { dos.Read(fs, DosSourceDisk.Length - 1, tail); throw new Exception("out-of-bounds DOS read accepted"); }
+        catch (ArgumentOutOfRangeException) { checks++; }
+    }
+    File.WriteAllBytes(Path.Combine(catalog.TftpDirectory, "win98.iso.dos.img"), [0]);
+    menu = generator.GenerateIpxeMenu("192.0.2.1:8080");
+    Check(Method("win98-auto").Contains("sanhook --no-describe --drive 0x81") && Method("win98-auto").Contains("sanboot --no-describe --drive 0x00"), "prepared DOS path keeps local target drive and network source separate");
+    Check(Method("win98-auto").Contains("iseq ${platform} pcbios || goto methodfail"), "DOS source boot rejects UEFI");
 
     var pmap = Call(100000, 3, w => { w.U(100003); w.U(3); w.U(6); w.U(0); }, 2);
     Check(pmap.U() == 32049, "portmapper TCP mapping");
@@ -308,6 +346,24 @@ try
             using var range = await client.SendAsync(request);
             Check(range.StatusCode == HttpStatusCode.PartialContent && (await range.Content.ReadAsByteArrayAsync()).SequenceEqual(payload.Skip(2047).Take(3000)), "HTTP range and NFS expose identical ISO content");
             Check((await client.GetStringAsync("/boot.ipxe")).Contains("netboot=nfs"), "HTTP serves streaming menu");
+            using (var dosHead = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/dos-source/win98")))
+                Check(dosHead.IsSuccessStatusCode && dosHead.Content.Headers.ContentLength == DosSourceDisk.Length && (await dosHead.Content.ReadAsStreamAsync()).ReadByte() == -1, "DOS virtual source HEAD advertises capacity without creating a disk");
+            using (var dosRequest = new HttpRequestMessage(HttpMethod.Get, "/dos-source/win98"))
+            {
+                dosRequest.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(510, 511);
+                using var dosReply = await client.SendAsync(dosRequest);
+                Check(dosReply.StatusCode == HttpStatusCode.PartialContent && (await dosReply.Content.ReadAsByteArrayAsync()).SequenceEqual(new byte[] { 0x55, 0xaa }), "HTTP range serves the synthesized MBR signature");
+                Check(http.DosBytesRead == 2, "DOS source counter excludes HEAD requests");
+            }
+            using (var badDosRequest = new HttpRequestMessage(HttpMethod.Get, "/dos-source/win98"))
+            {
+                badDosRequest.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(DosSourceDisk.Length, null);
+                using var dosReply = await client.SendAsync(badDosRequest);
+                Check(dosReply.StatusCode == HttpStatusCode.RequestedRangeNotSatisfiable, "DOS HTTP source rejects out-of-bounds ranges");
+            }
+            using (var wrongDos = await client.GetAsync("/dos-source/ubuntu")) Check(wrongDos.StatusCode == HttpStatusCode.NotFound, "DOS source rejects non-Windows-98 media");
+            File.Delete(Path.Combine(catalog.TftpDirectory, "win98.iso.dos.img"));
+            using (var unpreparedDos = await client.GetAsync("/dos-source/win98")) Check(unpreparedDos.StatusCode == HttpStatusCode.NotFound, "DOS source requires explicit preparation");
             var vmImages = JsonSerializer.Deserialize<VmImage[]>(await client.GetStringAsync("/catalog.json"))!;
             Check(vmImages.Length == catalog.Entries.Count && vmImages.All(i => i.Path.StartsWith("/isos/")), "VM catalog exposes relative media paths without server filesystem paths");
             Check(vmImages.Single(i => i.Path == "/isos/win98.iso").Profile == "legacy" && vmImages.Single(i => i.Path == "/isos/xp.iso").Profile == "classic", "legacy VM presets selected automatically");

@@ -189,6 +189,7 @@ internal sealed class BootConfigGenerator
     public string BootSummary(IsoEntry entry)
     {
         if (!CanBoot(entry)) return "Not supported";
+        if (HasDosSource(entry)) return "Experimental DOS PXE source (requires local FAT disk)";
         if (entry.Metadata.WindowsEra == WindowsBootEra.NinexClass)
             return "Legacy BIOS attempt / DOS CD driver required";
         if (entry.Metadata.WindowsEra == WindowsBootEra.XpClass)
@@ -317,6 +318,9 @@ internal sealed class BootConfigGenerator
     // Method bodies - the actual boot logic for each chosen method.
     // -----------------------------------------------------------------
 
+    private bool HasDosSource(IsoEntry entry) => entry.Metadata.WindowsEra == WindowsBootEra.NinexClass &&
+        File.Exists(Path.Combine(_catalog.TftpDirectory, entry.FileName + ".dos.img"));
+
     private void EmitMethodBodies(StringBuilder sb, string authority, IsoEntry entry)
     {
         var slug = entry.Slug;
@@ -328,7 +332,17 @@ internal sealed class BootConfigGenerator
         sb.AppendLine();
         sb.AppendLine($":{slug}-auto");
         sb.AppendLine($"set last-method-menu {slug}");
-        if (isWin)
+        if (HasDosSource(entry))
+        {
+            sb.AppendLine("iseq ${platform} pcbios || goto methodfail");
+            sb.AppendLine("echo Experimental DOS network-source test; no disk formatting.");
+            sb.AppendLine($"sanhook --no-describe --drive 0x81 http://{authority}/dos-source/{slug} || goto methodfail");
+            sb.AppendLine($"sanboot --no-describe --drive 0x00 http://{authority}/files/{Uri.EscapeDataString(entry.FileName + ".dos.img")} || goto {slug}-dos-cleanup");
+            sb.AppendLine($":{slug}-dos-cleanup");
+            sb.AppendLine("sanunhook --drive 0x81 || echo Source already detached");
+            sb.AppendLine("goto methodfail");
+        }
+        else if (isWin)
         {
             sb.AppendLine($"echo Auto: wimboot (modern Windows detected)");
             sb.AppendLine($"goto {slug}-wimboot");
