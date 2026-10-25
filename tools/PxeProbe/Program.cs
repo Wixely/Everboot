@@ -11,6 +11,8 @@ using Microsoft.Extensions.Logging;
 using Everboot.Services.Vm;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 
 // QEMU is ONLY a PXE client here: no CD, -kernel, or NBD is attached.
 // An optional newly created blank disk is exclusively an installation target.
@@ -79,24 +81,29 @@ var options = Options.Create(config);
 using var catalog = new BootCatalog(options, new IsoInspector(NullLogger<IsoInspector>.Instance), NullLogger<BootCatalog>.Instance);
 var status = new NfsStatus();
 using var http = new HttpFileService(NullLogger<HttpFileService>.Instance, catalog, new BootConfigGenerator(catalog, options), options, status);
+var webBuilder = WebApplication.CreateBuilder();
+webBuilder.Logging.ClearProviders();
+webBuilder.WebHost.UseKestrel(server => server.Listen(IPAddress.Any, port));
+await using var web = webBuilder.Build();
+web.Map("/{**path}", http.HandleKestrelAsync);
 using var nfs = new NfsService(catalog, options, status, NullLogger<NfsService>.Instance);
 var shares = new SmbShareCatalog(catalog, options, logs.CreateLogger<SmbShareCatalog>());
 using var smb = new SmbService(logs.CreateLogger<SmbService>(), shares, options);
 Process? qemu = null;
 try
 {
-    await http.StartAsync(default); await nfs.StartAsync(default); await smb.StartAsync(default);
+    await web.StartAsync(); await nfs.StartAsync(default); await smb.StartAsync(default);
     // BackgroundService.StartAsync can return before binding. Surface failures
     // before launching a guest rather than leaving it waiting on a dead server.
-    using (var ready = new HttpClient { Timeout = TimeSpan.FromSeconds(2) })
+    using (var ready = new HttpClient { Timeout = TimeSpan.FromSeconds(5) })
     {
         for (var attempt = 0; ; attempt++)
         {
-            if (http.ExecuteTask?.IsFaulted == true) await http.ExecuteTask;
             if (nfs.ExecuteTask?.IsFaulted == true) await nfs.ExecuteTask;
             if (smb.ExecuteTask?.IsFaulted == true) await smb.ExecuteTask;
             try { (await ready.GetAsync($"http://localhost:{port}/boot.ipxe")).EnsureSuccessStatusCode(); if (status.Running) break; }
             catch (HttpRequestException) when (attempt < 20) { }
+            catch (TaskCanceledException) when (attempt < 20) { }
             if (attempt >= 20) throw new IOException("PXE services did not become ready; check HTTP permissions and portmapper TCP 111 permissions/conflicts.");
             await Task.Delay(100);
         }
@@ -206,5 +213,5 @@ try
 finally
 {
     if (qemu is not null) { if (!qemu.HasExited) qemu.Kill(true); qemu.Dispose(); }
-    await smb.StopAsync(default); await nfs.StopAsync(default); await http.StopAsync(default);
+    await smb.StopAsync(default); await nfs.StopAsync(default); await web.StopAsync();
 }

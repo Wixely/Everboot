@@ -6,5 +6,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
-  <ItemGroup><ProjectReference Include="../../src/Everboot/Everboot.csproj" /></ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../src/Everboot/Everboot.csproj" />
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
 </Project>

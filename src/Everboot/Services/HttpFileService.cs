@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using DiscUtils;
 using Everboot.Configuration;
 using Everboot.Services.Nfs;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -50,6 +51,11 @@ internal sealed partial class HttpFileService : BackgroundService
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!_options.Http.UseLegacyListener)
+        {
+            _logger.LogInformation("PXE HTTP endpoints are hosted by Kestrel");
+            return;
+        }
         if (!HttpListener.IsSupported)
         {
             _logger.LogCritical("HttpListener is not supported on this platform");
@@ -105,6 +111,8 @@ internal sealed partial class HttpFileService : BackgroundService
         var request = context.Request;
         var response = context.Response;
         var path = request.Url?.AbsolutePath ?? "/";
+        var bootRequest = BootHttpRequest.From(request);
+        var bootResponse = BootHttpResponse.From(response);
 
         try
         {
@@ -134,12 +142,7 @@ internal sealed partial class HttpFileService : BackgroundService
 
             if (path == "/catalog.json")
             {
-                var images = _catalog.Entries.Select(e => Vm.VmRecipes.Describe(e, _catalog.TftpDirectory));
-                var bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(images);
-                response.ContentType = "application/json; charset=utf-8";
-                response.Headers["Cache-Control"] = "no-store";
-                response.ContentLength64 = bytes.Length;
-                if (request.HttpMethod != "HEAD") await response.OutputStream.WriteAsync(bytes, stoppingToken);
+                await WriteCatalogAsync(bootRequest, bootResponse, stoppingToken);
                 return;
             }
 
@@ -151,7 +154,7 @@ internal sealed partial class HttpFileService : BackgroundService
 
             if (path is "/boot.ipxe" or "/boot.cfg")
             {
-                await WriteIpxeMenuAsync(request, response, stoppingToken).ConfigureAwait(false);
+                await WriteIpxeMenuAsync(bootRequest, bootResponse, stoppingToken).ConfigureAwait(false);
                 return;
             }
 
@@ -163,17 +166,17 @@ internal sealed partial class HttpFileService : BackgroundService
                     parts[3] is not ("winpeshl.ini" or "everboot.cmd"))
                 { response.StatusCode = 404; return; }
                 string script;
-                try { script = parts[3] == "winpeshl.ini" ? WinPeStartup.Shell : WinPeStartup.Script(ResolveAuthority(request), entry.Slug); }
+                try { script = parts[3] == "winpeshl.ini" ? WinPeStartup.Shell : WinPeStartup.Script(ResolveAuthority(bootRequest), entry.Slug); }
                 catch (ArgumentException) { response.StatusCode = 400; return; }
                 response.Headers["Cache-Control"] = "no-store";
-                await WritePlainTextAsync(request, response, script, stoppingToken);
+                await WritePlainTextAsync(bootRequest, bootResponse, script, stoppingToken);
                 return;
             }
 
             if (path.StartsWith("/isos/", StringComparison.Ordinal))
             {
                 var rawName = path["/isos/".Length..];
-                await WriteIsoAsync(request, response, rawName, stoppingToken).ConfigureAwait(false);
+                await WriteIsoAsync(bootRequest, bootResponse, rawName, stoppingToken).ConfigureAwait(false);
                 return;
             }
 
@@ -188,25 +191,25 @@ internal sealed partial class HttpFileService : BackgroundService
                 }
                 var slug = rest[..slash];
                 var innerPath = Uri.UnescapeDataString(rest[(slash + 1)..]);
-                await WriteIsoContentAsync(request, response, slug, innerPath, stoppingToken).ConfigureAwait(false);
+                await WriteIsoContentAsync(bootRequest, bootResponse, slug, innerPath, stoppingToken).ConfigureAwait(false);
                 return;
             }
 
             if (path.StartsWith("/dos-source/", StringComparison.Ordinal))
             {
-                await WriteDosSourceAsync(request, response, path["/dos-source/".Length..], stoppingToken);
+                await WriteDosSourceAsync(bootRequest, bootResponse, path["/dos-source/".Length..], stoppingToken);
                 return;
             }
 
             if (path.StartsWith("/files/", StringComparison.Ordinal))
             {
                 var rawName = path["/files/".Length..];
-                await WriteSupportFileAsync(request, response, rawName, stoppingToken).ConfigureAwait(false);
+                await WriteSupportFileAsync(bootRequest, bootResponse, rawName, stoppingToken).ConfigureAwait(false);
                 return;
             }
 
             response.StatusCode = (int)HttpStatusCode.NotFound;
-            await WritePlainTextAsync(request, response, "not found\n", stoppingToken).ConfigureAwait(false);
+            await WritePlainTextAsync(bootRequest, bootResponse, "not found\n", stoppingToken).ConfigureAwait(false);
         }
         catch (HttpListenerException ex)
         {
@@ -226,19 +229,86 @@ internal sealed partial class HttpFileService : BackgroundService
         }
     }
 
-    private async Task WriteIpxeMenuAsync(HttpListenerRequest request, HttpListenerResponse response, CancellationToken ct)
+    internal async Task HandleKestrelAsync(HttpContext context)
+    {
+        var request = BootHttpRequest.From(context.Request);
+        var response = BootHttpResponse.From(context.Response);
+        try
+        {
+            await HandleBootTransportAsync(request, response, context.RequestAborted).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested) { }
+        catch (IOException ex) when (context.RequestAborted.IsCancellationRequested)
+        {
+            _logger.LogDebug(ex, "Client disconnected during {Method} {Path}", request.Method, request.Path);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error handling {Method} {Path}", request.Method, request.Path);
+            if (!context.Response.HasStarted) context.Response.StatusCode = 500;
+        }
+    }
+
+    private async Task HandleBootTransportAsync(BootHttpRequest request, BootHttpResponse response, CancellationToken ct)
+    {
+        var path = request.Path;
+        if (request.Method is not ("GET" or "HEAD"))
+        {
+            response.StatusCode = 405;
+            response.AddHeader("Allow", "GET, HEAD");
+            return;
+        }
+        if (path == "/catalog.json") { await WriteCatalogAsync(request, response, ct); return; }
+        if (path is "/boot.ipxe" or "/boot.cfg") { await WriteIpxeMenuAsync(request, response, ct); return; }
+        if (path.StartsWith("/winpe/", StringComparison.Ordinal))
+        {
+            var parts = path.Split('/');
+            if (parts.Length != 4 || !_options.Smb.Enabled || _options.Smb.Port != 445 ||
+                !_catalog.TryGetBySlug(parts[2], out var entry) || entry?.Metadata.WindowsFiles is null ||
+                parts[3] is not ("winpeshl.ini" or "everboot.cmd"))
+            { response.StatusCode = 404; return; }
+            string script;
+            try { script = parts[3] == "winpeshl.ini" ? WinPeStartup.Shell : WinPeStartup.Script(ResolveAuthority(request), entry.Slug); }
+            catch (ArgumentException) { response.StatusCode = 400; return; }
+            response.AddHeader("Cache-Control", "no-store");
+            await WritePlainTextAsync(request, response, script, ct); return;
+        }
+        if (path.StartsWith("/isos/", StringComparison.Ordinal)) { await WriteIsoAsync(request, response, path["/isos/".Length..], ct); return; }
+        if (path.StartsWith("/iso/", StringComparison.Ordinal))
+        {
+            var rest = path["/iso/".Length..]; var slash = rest.IndexOf('/');
+            if (slash <= 0 || slash == rest.Length - 1) { response.StatusCode = 404; return; }
+            await WriteIsoContentAsync(request, response, rest[..slash], Uri.UnescapeDataString(rest[(slash + 1)..]), ct); return;
+        }
+        if (path.StartsWith("/dos-source/", StringComparison.Ordinal)) { await WriteDosSourceAsync(request, response, path["/dos-source/".Length..], ct); return; }
+        if (path.StartsWith("/files/", StringComparison.Ordinal)) { await WriteSupportFileAsync(request, response, path["/files/".Length..], ct); return; }
+        response.StatusCode = 404;
+        await WritePlainTextAsync(request, response, "not found\n", ct);
+    }
+
+    private async Task WriteCatalogAsync(BootHttpRequest request, BootHttpResponse response, CancellationToken ct)
+    {
+        var images = _catalog.Entries.Select(e => Vm.VmRecipes.Describe(e, _catalog.TftpDirectory));
+        var bytes = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(images);
+        response.ContentType = "application/json; charset=utf-8";
+        response.AddHeader("Cache-Control", "no-store");
+        response.ContentLength = bytes.Length;
+        if (request.Method != "HEAD") await response.OutputStream.WriteAsync(bytes, ct);
+    }
+
+    private async Task WriteIpxeMenuAsync(BootHttpRequest request, BootHttpResponse response, CancellationToken ct)
     {
         var authority = ResolveAuthority(request);
-        response.Headers["Cache-Control"] = "no-store";
+        response.AddHeader("Cache-Control", "no-store");
         string script;
-        if (request.QueryString["identity"] != "1")
+        if (request.Query["identity"] != "1")
             script = $"#!ipxe\nchain http://{authority}/boot.ipxe?identity=1&mac=${{netX/mac}}&ip=${{netX/ip}} || exit\n";
         else
         {
             try
             {
-                var decision = _catalog.Policies.Decide(_catalog.Entries, request.QueryString["mac"],
-                    string.IsNullOrWhiteSpace(request.QueryString["ip"]) ? request.RemoteEndPoint?.Address.ToString() : request.QueryString["ip"]);
+                var decision = _catalog.Policies.Decide(_catalog.Entries, request.Query["mac"],
+                    string.IsNullOrWhiteSpace(request.Query["ip"]) ? request.RemoteEndPoint?.Address.ToString() : request.Query["ip"]);
                 script = _generator.GenerateIpxeMenu(authority, decision);
             }
             catch (ArgumentException) { response.StatusCode = 400; return; }
@@ -247,8 +317,8 @@ internal sealed partial class HttpFileService : BackgroundService
 
         response.StatusCode = (int)HttpStatusCode.OK;
         response.ContentType = "text/plain; charset=utf-8";
-        response.ContentLength64 = bytes.Length;
-        if (request.HttpMethod != "HEAD")
+        response.ContentLength = bytes.Length;
+        if (request.Method != "HEAD")
         {
             await response.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
         }
@@ -391,7 +461,7 @@ internal sealed partial class HttpFileService : BackgroundService
         await response.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
     }
 
-    private async Task WriteIsoAsync(HttpListenerRequest request, HttpListenerResponse response, string rawName, CancellationToken ct)
+    private async Task WriteIsoAsync(BootHttpRequest request, BootHttpResponse response, string rawName, CancellationToken ct)
     {
         string fileName;
         try
@@ -430,7 +500,7 @@ internal sealed partial class HttpFileService : BackgroundService
         var total = info.Length;
         long start = 0;
         long end = total - 1;
-        var partial = TryParseRange(request.Headers["Range"], total, ref start, ref end);
+        var partial = TryParseRange(request.Header("Range"), total, ref start, ref end);
 
         if (partial && (start > end || start < 0 || start >= total))
         {
@@ -442,7 +512,7 @@ internal sealed partial class HttpFileService : BackgroundService
         var length = end - start + 1;
         response.StatusCode = partial ? (int)HttpStatusCode.PartialContent : (int)HttpStatusCode.OK;
         response.ContentType = "application/octet-stream";
-        response.ContentLength64 = length;
+        response.ContentLength = length;
         response.AddHeader("Accept-Ranges", "bytes");
         response.AddHeader("Content-Disposition", $"attachment; filename=\"{entry.FileName}\"");
         if (partial)
@@ -450,7 +520,7 @@ internal sealed partial class HttpFileService : BackgroundService
             response.AddHeader("Content-Range", $"bytes {start}-{end}/{total}");
         }
 
-        if (request.HttpMethod == "HEAD")
+        if (request.Method == "HEAD")
         {
             return;
         }
@@ -490,7 +560,7 @@ internal sealed partial class HttpFileService : BackgroundService
             entry.FileName, start, end, total, request.RemoteEndPoint);
     }
 
-    private async Task WriteIsoContentAsync(HttpListenerRequest request, HttpListenerResponse response, string slug, string innerPath, CancellationToken ct)
+    private async Task WriteIsoContentAsync(BootHttpRequest request, BootHttpResponse response, string slug, string innerPath, CancellationToken ct)
     {
         if (!_catalog.TryGetBySlug(slug, out var entry) || entry is null)
         {
@@ -540,7 +610,7 @@ internal sealed partial class HttpFileService : BackgroundService
             var total = inner.Length;
             long start = 0;
             long end = total - 1;
-            var partial = TryParseRange(request.Headers["Range"], total, ref start, ref end);
+            var partial = TryParseRange(request.Header("Range"), total, ref start, ref end);
 
             if (partial && (start > end || start < 0 || start >= total))
             {
@@ -552,14 +622,14 @@ internal sealed partial class HttpFileService : BackgroundService
             var length = end - start + 1;
             response.StatusCode = partial ? (int)HttpStatusCode.PartialContent : (int)HttpStatusCode.OK;
             response.ContentType = "application/octet-stream";
-            response.ContentLength64 = length;
+            response.ContentLength = length;
             response.AddHeader("Accept-Ranges", "bytes");
             if (partial)
             {
                 response.AddHeader("Content-Range", $"bytes {start}-{end}/{total}");
             }
 
-            if (request.HttpMethod == "HEAD")
+            if (request.Method == "HEAD")
             {
                 return;
             }
@@ -578,7 +648,7 @@ internal sealed partial class HttpFileService : BackgroundService
         }
     }
 
-    private async Task WriteSupportFileAsync(HttpListenerRequest request, HttpListenerResponse response, string rawName, CancellationToken ct)
+    private async Task WriteSupportFileAsync(BootHttpRequest request, BootHttpResponse response, string rawName, CancellationToken ct)
     {
         string name;
         try
@@ -611,7 +681,7 @@ internal sealed partial class HttpFileService : BackgroundService
         var total = info.Length;
         long start = 0;
         long end = total - 1;
-        var partial = TryParseRange(request.Headers["Range"], total, ref start, ref end);
+        var partial = TryParseRange(request.Header("Range"), total, ref start, ref end);
 
         if (partial && (start > end || start < 0 || start >= total))
         {
@@ -623,14 +693,14 @@ internal sealed partial class HttpFileService : BackgroundService
         var length = end - start + 1;
         response.StatusCode = partial ? (int)HttpStatusCode.PartialContent : (int)HttpStatusCode.OK;
         response.ContentType = "application/octet-stream";
-        response.ContentLength64 = length;
+        response.ContentLength = length;
         response.AddHeader("Accept-Ranges", "bytes");
         if (partial)
         {
             response.AddHeader("Content-Range", $"bytes {start}-{end}/{total}");
         }
 
-        if (request.HttpMethod == "HEAD")
+        if (request.Method == "HEAD")
         {
             return;
         }
@@ -650,7 +720,7 @@ internal sealed partial class HttpFileService : BackgroundService
             name, start, end, total, request.RemoteEndPoint);
     }
 
-    private async Task WriteDosSourceAsync(HttpListenerRequest request, HttpListenerResponse response, string slug, CancellationToken ct)
+    private async Task WriteDosSourceAsync(BootHttpRequest request, BootHttpResponse response, string slug, CancellationToken ct)
     {
         var entry = _catalog.Entries.FirstOrDefault(e => e.Slug == slug && e.Metadata.WindowsEra == WindowsBootEra.NinexClass);
         if (entry is null || !File.Exists(Path.Combine(_catalog.TftpDirectory, entry.FileName + ".dos.img")))
@@ -671,16 +741,16 @@ internal sealed partial class HttpFileService : BackgroundService
             disk = cached.Disk;
         }
         long start = 0, end = DosSourceDisk.Length - 1;
-        var partial = TryParseRange(request.Headers["Range"], DosSourceDisk.Length, ref start, ref end);
+        var partial = TryParseRange(request.Header("Range"), DosSourceDisk.Length, ref start, ref end);
         if (partial && (start > end || start < 0 || start >= DosSourceDisk.Length))
         { response.StatusCode = 416; response.AddHeader("Content-Range", $"bytes */{DosSourceDisk.Length}"); return; }
         response.StatusCode = partial ? 206 : 200;
         response.ContentType = "application/octet-stream";
-        response.ContentLength64 = end - start + 1;
+        response.ContentLength = end - start + 1;
         response.AddHeader("Accept-Ranges", "bytes");
         response.AddHeader("Cache-Control", "no-store");
         if (partial) response.AddHeader("Content-Range", $"bytes {start}-{end}/{DosSourceDisk.Length}");
-        if (request.HttpMethod == "HEAD") return;
+        if (request.Method == "HEAD") return;
         var buffer = new byte[CopyBufferSize];
         while (start <= end)
         {
@@ -777,9 +847,9 @@ internal sealed partial class HttpFileService : BackgroundService
         return true;
     }
 
-    private static string ResolveAuthority(HttpListenerRequest request)
+    private static string ResolveAuthority(BootHttpRequest request)
     {
-        var host = request.Headers["Host"];
+        var host = request.Header("Host");
         if (!string.IsNullOrEmpty(host))
         {
             return host;
@@ -788,12 +858,12 @@ internal sealed partial class HttpFileService : BackgroundService
         return localEp is null ? "everboot" : $"{localEp.Address}:{localEp.Port}";
     }
 
-    private static async Task WritePlainTextAsync(HttpListenerRequest request, HttpListenerResponse response, string text, CancellationToken ct)
+    private static async Task WritePlainTextAsync(BootHttpRequest request, BootHttpResponse response, string text, CancellationToken ct)
     {
         var bytes = Encoding.UTF8.GetBytes(text);
         response.ContentType = "text/plain; charset=utf-8";
-        response.ContentLength64 = bytes.Length;
-        if (request.HttpMethod == "HEAD")
+        response.ContentLength = bytes.Length;
+        if (request.Method == "HEAD")
         {
             return;
         }

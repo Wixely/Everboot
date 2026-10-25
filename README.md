@@ -52,11 +52,11 @@ reverse proxy; the built-in listener is HTTP. Page forms include CSRF protection
 Do not expose the loopback listener through an untrusted proxy: a loopback proxy
 connection is treated as local. The UI itself remains readable from the LAN.
 
-The management workspace is now implemented with server-side Blazor and runs in
-the Everboot process on `Http:ManagementPort` (8081 by default). PXE downloads
-remain on `Http:Port` (8080) while their range, HEAD and streaming behaviour is
-migrated to Kestrel and regression-tested. This temporary two-port boundary keeps
-the operational UI independent from the compatibility-sensitive boot transport.
+The management workspace is implemented with server-side Blazor. Kestrel hosts
+it together with the PXE download routes on `Http:Port` (8080 by default), so
+Everboot remains a single process with one HTTP port. The same range-serving
+implementation is exercised through both Kestrel and the transitional listener
+in the transport probe.
 
 An explicitly selected unavailable method fails instead of silently changing
 methods. Custom kernel/initrd paths must exist inside the image; network and
@@ -65,7 +65,7 @@ make every ISO compatible with PXE or guarantee streaming.
 
 ## Experimental streaming boot
 
-Branch: `experimental/streaming-boot`. Reviewed: **2026-10-24**.
+Branch: `experimental/streaming-boot`. Reviewed: **2026-10-25**.
 
 This branch embeds a read-only **NFSv3 server in the same C# process**. Each
 ISO becomes an export at `/<image-slug>`, backed directly by DiscUtils. There is
@@ -412,8 +412,8 @@ Add or remove an ISO and the menu updates within ~500 ms - no restart needed. Th
 dotnet run --project src/Everboot
 ```
 
-Then drop an ISO into `data/isos/` and visit `http://localhost:8081/` for the
-Blazor management workspace. The PXE transport remains at
+Then drop an ISO into `data/isos/` and visit `http://localhost:8080/` for the
+Blazor management workspace. The PXE menu is available at
 `http://localhost:8080/boot.ipxe`; files inside an ISO are reachable at
 `http://localhost:8080/iso/<slug>/<path-inside-iso>` (used for the Windows boot
 chain).
@@ -426,9 +426,6 @@ Logs land in the terminal and on disk (`./logs/everboot-YYYY-MM-DD.NNN.log`, dai
 > moves TFTP to `6969` and HTTP to `localhost:8080` so `dotnet run` works
 > without elevation.
 >
-> On Windows, binding HTTP on `+:8080` in production needs admin or a one-off URL ACL:
-> `netsh http add urlacl url=http://+:8080/ user=Everyone`.
-
 ## Build a standalone binary
 
 ```bash
@@ -462,7 +459,7 @@ For a real deployment (Portainer, Compose, etc.) use the sample stack at [exampl
 {
   "Everboot": {
     "DataDirectory": "./data",
-    "Http": { "Port": 8080, "ManagementPort": 8081, "BindAddress": "+" },
+    "Http": { "Port": 8080, "BindAddress": "+" },
     "Tftp": { "Port": 69, "BindAddress": "0.0.0.0", "MaxBlockSize": 1468 },
     "Iscsi": {
       "Enabled": true,

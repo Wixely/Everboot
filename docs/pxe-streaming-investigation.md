@@ -280,3 +280,19 @@ Remaining: visual UI verification (MCPHub browser launch failed despite reportin
 an installed runtime), and optional real-OS regression with device policies.
 Recommended next action: agent completes desktop/mobile browser checks once an
 existing browser tool is available. No physical PXE validation is claimed.
+
+## Kestrel and Blazor migration — 2026-10-25
+
+Everboot now hosts its server-side Blazor management workspace and PXE HTTP
+routes on the same Kestrel port. The byte-serving implementation sits behind a
+small transport adapter so the regression probe can exercise it through both
+Kestrel and the transitional `HttpListener` host. Automated checks cover partial
+ISO reads, `Content-Range`, the 2 GiB virtual DOS source `HEAD` response,
+identity-aware iPXE generation and the VM catalog through Kestrel.
+
+A diskless QEMU PXE smoke test then booted NIC iPXE with no CD, kernel or NBD
+device attached. QEMU fetched `/boot.ipxe` from Kestrel and displayed Everboot's
+generated image menu. The fixture ISO was 698 KiB and the retained output
+contained only the small fixture copy, QEMU metadata and a screenshot; no target
+disk was created. This proves the Kestrel path reaches an emulated PXE client.
+The earlier operating-system runs remain the evidence for post-handoff support.

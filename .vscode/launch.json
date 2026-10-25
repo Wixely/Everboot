@@ -23,7 +23,6 @@
         "Everboot__DataDirectory": "${workspaceFolder}/data",
         "Everboot__Http__BindAddress": "localhost",
         "Everboot__Http__Port": "8080",
-        "Everboot__Http__ManagementPort": "8081",
         "Everboot__Dhcp__Enabled": "false"
       }
     },

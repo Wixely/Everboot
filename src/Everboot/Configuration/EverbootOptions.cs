@@ -41,16 +41,14 @@ internal sealed class HttpOptions
     public int Port { get; set; } = 8080;
 
     /// <summary>
-    /// Blazor management interface port. During the transport migration this
-    /// remains separate from the PXE file server so byte-serving behaviour can
-    /// be verified before both listeners are consolidated.
+    /// Transitional compatibility switch used by the transport probe. Normal
+    /// Everboot hosting uses Kestrel for the Blazor UI and PXE endpoints.
     /// </summary>
-    [Range(1, 65535)]
-    public int ManagementPort { get; set; } = 8081;
+    public bool UseLegacyListener { get; set; }
 
     /// <summary>
-    /// HttpListener bind host. "+" listens on every interface (needs admin/URLACL on Windows),
-    /// "localhost" is the safe dev default, or set a specific IP.
+    /// Kestrel bind host. "+" listens on every interface, "localhost" is the
+    /// safe development default, or set a specific IP.
     /// </summary>
     public string BindAddress { get; set; } = "+";
 }

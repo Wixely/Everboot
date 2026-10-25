@@ -10,6 +10,7 @@ using Everboot.Services.Nfs;
 using Everboot.Web;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -87,18 +88,23 @@ public static class Program
 
         builder.Services.AddHostedService<DhcpProxyService>();
         builder.Services.AddHostedService<TftpService>();
-        builder.Services.AddHostedService<HttpFileService>();
+        builder.Services.AddSingleton<HttpFileService>();
+        builder.Services.AddHostedService(services => services.GetRequiredService<HttpFileService>());
         builder.Services.AddHostedService<IscsiService>();
         builder.Services.AddHostedService<SmbService>();
         builder.Services.AddHostedService<NfsService>();
 
         var http = builder.Configuration.GetSection(EverbootOptions.SectionName).GetSection("Http").Get<HttpOptions>() ?? new();
-        var managementHost = http.BindAddress is "+" or "*" ? "0.0.0.0" : http.BindAddress;
-        builder.WebHost.UseUrls($"http://{managementHost}:{http.ManagementPort}");
+        var webHost = http.BindAddress is "+" or "*" ? "0.0.0.0" : http.BindAddress;
+        builder.WebHost.UseUrls($"http://{webHost}:{http.Port}");
 
         var app = builder.Build();
         app.UseStaticFiles();
         app.UseAntiforgery();
+        static async Task ServePxe(HttpContext context) =>
+            await context.RequestServices.GetRequiredService<HttpFileService>().HandleKestrelAsync(context);
+        foreach (var pattern in new[] { "/boot.ipxe", "/boot.cfg", "/catalog.json", "/winpe/{**path}", "/isos/{**path}", "/iso/{**path}", "/dos-source/{**path}", "/files/{**path}" })
+            app.MapMethods(pattern, ["GET", "HEAD"], ServePxe);
         app.MapRazorComponents<App>()
             .AddInteractiveServerRenderMode();
         return app;

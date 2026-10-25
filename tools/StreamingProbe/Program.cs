@@ -10,6 +10,11 @@ using Everboot.Services.Vm;
 using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Hosting.Server;
+using Microsoft.AspNetCore.Hosting.Server.Features;
+using Microsoft.Extensions.DependencyInjection;
 
 // Dependency-free integration suite. Fixtures are deliberately NOT bootable OSes.
 // --serve keeps the fixture server alive for an independent Linux mount test.
@@ -326,6 +331,7 @@ try
     try { await NfsService.ReadRecordAsync(new MemoryStream(huge), default); throw new Exception("Oversized frame accepted."); }
     catch (InvalidDataException) { checks++; }
     config.Http.BindAddress = "localhost"; config.Http.Port = FreePort();
+    config.Http.UseLegacyListener = true;
     using (var http = new HttpFileService(NullLogger<HttpFileService>.Instance, catalog, generator, options, status))
     using (var client = new HttpClient { BaseAddress = new Uri($"http://localhost:{config.Http.Port}"), Timeout = TimeSpan.FromSeconds(5) })
     {
@@ -339,6 +345,25 @@ try
                 catch (HttpRequestException) { await Task.Delay(20); }
             }
             Check(html?.Contains("NFS: Listening") == true && html.Contains("Streaming candidate"), "HTTP library reports live service and compatibility");
+            var kestrelBuilder = WebApplication.CreateBuilder();
+            kestrelBuilder.WebHost.UseKestrel(server => server.Listen(IPAddress.Loopback, 0));
+            await using var kestrel = kestrelBuilder.Build();
+            kestrel.Map("/{**path}", http.HandleKestrelAsync);
+            await kestrel.StartAsync();
+            var kestrelAddress = kestrel.Services.GetRequiredService<IServer>().Features.Get<IServerAddressesFeature>()!.Addresses.Single();
+            using var kestrelClient = new HttpClient { BaseAddress = new Uri(kestrelAddress), Timeout = TimeSpan.FromSeconds(5) };
+            var kestrelRangeRequest = new HttpRequestMessage(HttpMethod.Get, "/iso/ubuntu/casper/filesystem.squashfs");
+            kestrelRangeRequest.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(2047, 5046);
+            using (var kestrelRange = await kestrelClient.SendAsync(kestrelRangeRequest))
+                Check(kestrelRange.StatusCode == HttpStatusCode.PartialContent && kestrelRange.Content.Headers.ContentRange?.From == 2047 &&
+                    (await kestrelRange.Content.ReadAsByteArrayAsync()).SequenceEqual(payload.Skip(2047).Take(3000)), "Kestrel adapter preserves ISO range response");
+            using (var kestrelHead = await kestrelClient.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/dos-source/win98")))
+                Check(kestrelHead.IsSuccessStatusCode && kestrelHead.Content.Headers.ContentLength == DosSourceDisk.Length &&
+                    (await kestrelHead.Content.ReadAsStreamAsync()).ReadByte() == -1, "Kestrel adapter preserves virtual DOS HEAD response");
+            Check((await kestrelClient.GetStringAsync("/boot.ipxe?identity=1")).Contains("netboot=nfs"), "Kestrel adapter serves identity-aware PXE menu");
+            Check(JsonSerializer.Deserialize<VmImage[]>(await kestrelClient.GetStringAsync("/catalog.json"))?.Length == catalog.Entries.Count,
+                "Kestrel adapter serves VM catalog");
+            await kestrel.StopAsync();
             using var head = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/"));
             Check(head.IsSuccessStatusCode && (await head.Content.ReadAsByteArrayAsync()).Length == 0, "library HEAD has no body");
             var request = new HttpRequestMessage(HttpMethod.Get, "/iso/ubuntu/casper/filesystem.squashfs");
