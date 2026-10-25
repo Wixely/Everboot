@@ -260,43 +260,37 @@ internal sealed partial class HttpFileService : BackgroundService
     {
         var sb = new StringBuilder();
         sb.AppendLine("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Everboot | Boot library</title>");
-        sb.Append("<style>").Append(ClassicMenuCss).AppendLine("</style>");
-        sb.AppendLine("</head><body><header><div class=\"eyebrow\">Everboot / Experimental streaming</div><h1>Boot library</h1><p>Add an image here. Network-boot a computer and select it once.</p></header>");
+        sb.Append("<style>").Append(ThemeCss).AppendLine("</style></head>");
+        AppendShellStart(sb, "library", "Deployment workspace", "Boot image library", "Manage the operating systems and tools offered to PXE clients across your network.",
+            "<form method='post' action='/refresh'><button type='submit'>Refresh library</button></form><a class='button secondary' href='/boot.ipxe'>View iPXE script</a>");
         var state = !_options.Nfs.Enabled ? "Disabled" : _nfsStatus.Running ? "Listening" : "Starting";
-        sb.AppendLine($"<section class=\"summary\"><h2>Live filesystem streaming</h2><p><strong>NFS: {state}</strong> &middot; {FormatSize(_nfsStatus.BytesRead)} served across {_nfsStatus.Reads:N0} reads since startup.</p><p class=\"muted\">Compatible Linux layouts read files from the original ISO on demand. The kernel, initial boot environment and writable session still use RAM. Keep the server and network available throughout the session.</p><p class=\"muted\">A streaming candidate has the expected files; it is not a verified boot result. Custom kernels and initramfs images must include NFS and network drivers.</p></section>");
-        sb.AppendLine($"<p class=\"muted\">Image folder: <code>{WebUtility.HtmlEncode(_catalog.IsoDirectory)}</code></p>");
-
-        sb.AppendLine("<nav class=\"toolbar\" aria-label=\"Library actions\">");
-        sb.AppendLine("<a href=\"/devices\">Device rules &amp; preview</a>");
-        sb.AppendLine("  <form method=\"post\" action=\"/refresh\" style=\"display:inline;margin:0\">");
-        sb.AppendLine("    <button type=\"submit\">Refresh catalog</button>");
-        sb.AppendLine("  </form>");
-        sb.AppendLine("  <a href=\"/diagnose\">Diagnose detection</a>");
-        sb.AppendLine("  <a href=\"/boot.ipxe\">View boot script</a>");
-        sb.AppendLine("</nav>");
-
         var entries = _catalog.Entries;
+        var streamReady = entries.Count(e => _generator.GetApplicableRecipes(e).Any(r => r.RequiresNfs));
+        var overrides = entries.Count(e => e.Override is not null);
+        var rules = _catalog.Policies.Snapshot.DeviceRules?.Length ?? 0;
+        sb.Append("<section class='stats-grid' aria-label='Library summary'><div class='stat-card'><span class='stat-label'>Images</span><strong class='stat-value'>").Append(entries.Count).Append("</strong><span class='stat-note'>ready in catalog</span></div><div class='stat-card'><span class='stat-label'>Streaming</span><strong class='stat-value'>").Append(streamReady).Append("</strong><span class='stat-note'>NFS candidates</span></div><div class='stat-card'><span class='stat-label'>Overrides</span><strong class='stat-value'>").Append(overrides).Append("</strong><span class='stat-note'>custom image policies</span></div><div class='stat-card'><span class='stat-label'>Device policies</span><strong class='stat-value'>").Append(rules).Append("</strong><span class='stat-note'>ordered matches</span></div></section>");
+        sb.Append($"<section class='window'><div class='window-bar'><span class='window-title'>Runtime status</span><span class='window-meta'>NFS: {state}</span></div><div class='window-body'><div class='section-intro'><p><strong>NFS: {state}</strong> · {FormatSize(_nfsStatus.BytesRead)} served across {_nfsStatus.Reads:N0} reads since startup.</p><a href='/diagnose'>Open detection diagnostics →</a></div><p class='form-help'>Compatible Linux layouts read files from the original ISO on demand. A streaming candidate has the expected files; it is not proof of a successful boot.</p></div></section>");
+        sb.Append("<section class='window'><div class='window-bar'><span class='window-title'>Image inventory</span><span class='window-meta'>").Append(entries.Count).Append(" ITEMS</span></div><div class='window-body'>");
         if (entries.Count == 0)
         {
-            sb.AppendLine("<p><em>No images found. Drop <code>*.iso</code> or <code>*.img</code> files into the directory above, then click <strong>Refresh catalog</strong>.</em></p>");
+            sb.AppendLine("<div class='empty-state'><strong>No boot images found</strong><p>Add <code>*.iso</code> or <code>*.img</code> files to the configured image folder, then refresh the library.</p></div>");
         }
         else
         {
-            sb.AppendLine("<div class=\"library\">");
+            sb.AppendLine("<div class='image-list'>");
             foreach (var entry in entries)
             {
                 var url = $"/isos/{Uri.EscapeDataString(entry.FileName)}";
-                sb.Append("<article class=\"image\"><h2>").Append(WebUtility.HtmlEncode(entry.DisplayName)).Append("</h2>")
-                  .Append("<p class=\"muted\">").Append(FormatSize(entry.SizeBytes)).Append(" &middot; ")
-                  .Append(WebUtility.HtmlEncode(entry.Metadata.Profile?.DisplayName ?? "Other image")).Append("</p>")
-                  .Append("<p class=\"badge\">").Append(WebUtility.HtmlEncode(_generator.BootSummary(entry))).Append("</p>")
-                  .Append("<p><a href=\"/images/").Append(entry.Slug).Append("\">Detection &amp; boot settings")
-                  .Append(entry.Override is null ? "" : " (overridden)").Append("</a></p>")
-                  .Append("<p><a href=\"").Append(url).Append("\">Download original ISO/image</a></p></article>");
+                var extension = Path.GetExtension(entry.FileName).TrimStart('.');
+                sb.Append("<article class='image-row'><div class='media-icon'>").Append(WebUtility.HtmlEncode(extension)).Append("</div><div><span class='image-name'>").Append(WebUtility.HtmlEncode(entry.DisplayName)).Append("</span><div class='image-sub'>")
+                  .Append(WebUtility.HtmlEncode(entry.FileName)).Append(" · ").Append(FormatSize(entry.SizeBytes)).Append(" · ").Append(WebUtility.HtmlEncode(entry.Metadata.Profile?.DisplayName ?? "Unclassified image"))
+                  .Append(entry.Override is null ? "" : " · override active").Append("</div></div><div class='image-method'><span class='boot-state'>").Append(WebUtility.HtmlEncode(_generator.BootSummary(entry))).Append("</span></div><div class='row-actions'><a href='/images/")
+                  .Append(entry.Slug).Append("'>Configure</a><a href='").Append(url).Append("'>Download</a></div></article>");
             }
             sb.AppendLine("</div>");
         }
-        sb.AppendLine("<footer>Select an image on the target computer to boot. Advanced methods remain available in its boot menu. Streaming is experimental; Windows and unknown images keep their existing boot paths.</footer></body></html>");
+        sb.AppendLine("</div></section>");
+        AppendShellEnd(sb);
 
         var bytes = Encoding.UTF8.GetBytes(sb.ToString());
         response.StatusCode = (int)HttpStatusCode.OK;
@@ -321,18 +315,17 @@ internal sealed partial class HttpFileService : BackgroundService
         var sb = new StringBuilder(8192);
 
         sb.AppendLine("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Everboot | Detection diagnostics</title>");
-        sb.Append("<style>").Append(ClassicMenuCss).AppendLine("</style></head><body>");
-        sb.AppendLine("<nav aria-label=\"Primary\"><a href=\"/\">Boot library</a><a href=\"/devices\">Device rules</a><a href=\"/diagnose\">Diagnostics</a></nav>");
-        sb.AppendLine("<h1>Catalog detection diagnostics</h1>");
-        sb.AppendLine($"<p>ISO directory: <code>{WebUtility.HtmlEncode(_catalog.IsoDirectory)}</code> &nbsp;|&nbsp; {entries.Count} image(s)</p>");
+        sb.Append("<style>").Append(ThemeCss).AppendLine("</style></head>");
+        AppendShellStart(sb, "diagnostics", "Detection workspace", "Image diagnostics", "Inspect the filesystem evidence Everboot used to classify every image and choose its boot recipes.");
+        sb.Append("<section class='window'><div class='window-bar'><span class='window-title'>Catalog inspection</span><span class='window-meta'>").Append(entries.Count).Append(" IMAGES</span></div><div class='window-body'>");
 
         if (entries.Count == 0)
         {
-            sb.AppendLine("<p><em>No images in catalog.</em></p>");
+            sb.AppendLine("<div class='empty-state'><strong>No images to inspect</strong><p>Add media to the boot library and refresh the catalog.</p></div>");
         }
         else
         {
-            sb.AppendLine("<table><thead><tr>");
+            sb.AppendLine("<div class='wrap'><table><thead><tr>");
             sb.AppendLine("<th>File</th><th>Size</th><th>Volume label</th><th>Layout</th><th>Windows era</th><th>Profile</th><th>Direct boot</th><th>Floppy</th>");
             sb.AppendLine("</tr></thead><tbody>");
 
@@ -379,16 +372,17 @@ internal sealed partial class HttpFileService : BackgroundService
                   .Append("<td>").Append(floppyCell).Append("</td>")
                   .AppendLine("</tr>");
             }
-            sb.AppendLine("</tbody></table>");
+            sb.AppendLine("</tbody></table></div>");
 
-            sb.AppendLine("<h2>Reading the table</h2><ul>");
+            sb.AppendLine("<details><summary>How to read this report</summary><ul>");
             sb.AppendLine("<li><strong>Profile = (no match)</strong> means none of the codified distro patterns recognised this image. It falls through to plain sanboot. To make detection match, the volume label needs to start with the expected prefix (e.g. <code>Ubuntu</code>, <code>Pop_OS</code>) <em>and</em> the expected marker files must exist at the expected paths inside the ISO.</li>");
             sb.AppendLine("<li><strong>Direct boot = yes</strong> means the iPXE menu emits a direct kernel+initrd entry for this image. <strong>no</strong> means it sanboots.</li>");
             sb.AppendLine("<li><strong>Layout = none (raw image)</strong> means we couldn't read an ISO9660 or UDF filesystem inside - either a raw disk image (typical for <code>.img</code>) or a corrupt ISO.</li>");
-            sb.AppendLine("</ul>");
+            sb.AppendLine("</ul></details>");
         }
 
-        sb.AppendLine("</body></html>");
+        sb.AppendLine("</div></section>");
+        AppendShellEnd(sb);
 
         var bytes = Encoding.UTF8.GetBytes(sb.ToString());
         response.StatusCode = (int)HttpStatusCode.OK;
