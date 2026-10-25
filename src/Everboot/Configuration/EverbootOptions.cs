@@ -41,6 +41,14 @@ internal sealed class HttpOptions
     public int Port { get; set; } = 8080;
 
     /// <summary>
+    /// Blazor management interface port. During the transport migration this
+    /// remains separate from the PXE file server so byte-serving behaviour can
+    /// be verified before both listeners are consolidated.
+    /// </summary>
+    [Range(1, 65535)]
+    public int ManagementPort { get; set; } = 8081;
+
+    /// <summary>
     /// HttpListener bind host. "+" listens on every interface (needs admin/URLACL on Windows),
     /// "localhost" is the safe dev default, or set a specific IP.
     /// </summary>

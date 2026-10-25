@@ -1,0 +1,15 @@
+<Router AppAssembly="typeof(Program).Assembly">
+    <Found Context="routeData">
+        <RouteView RouteData="routeData" DefaultLayout="typeof(Layout.MainLayout)" />
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+    <NotFound>
+        <LayoutView Layout="typeof(Layout.MainLayout)">
+            <PageTitle>Not found | Everboot</PageTitle>
+            <section class="window">
+                <div class="window-bar"><span class="window-title">Workspace unavailable</span></div>
+                <div class="window-body empty-state"><strong>That page does not exist.</strong><p><a href="/">Return to the boot library</a>.</p></div>
+            </section>
+        </LayoutView>
+    </NotFound>
+</Router>

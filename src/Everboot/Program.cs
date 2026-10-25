@@ -7,6 +7,9 @@ using Everboot.Services;
 using Everboot.Services.Iscsi;
 using Everboot.Services.Smb;
 using Everboot.Services.Nfs;
+using Everboot.Web;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -55,9 +58,9 @@ public static class Program
         }
     }
 
-    private static IHost BuildHost(string[] args)
+    private static WebApplication BuildHost(string[] args)
     {
-        var builder = Host.CreateApplicationBuilder(new HostApplicationBuilderSettings
+        var builder = WebApplication.CreateBuilder(new WebApplicationOptions
         {
             Args = args,
             ContentRootPath = AppContext.BaseDirectory,
@@ -77,6 +80,10 @@ public static class Program
         builder.Services.AddSingleton<IscsiCatalog>();
         builder.Services.AddSingleton<SmbShareCatalog>();
         builder.Services.AddSingleton<NfsStatus>();
+        builder.Services.AddHttpContextAccessor();
+        builder.Services.AddScoped<ManagementAccess>();
+        builder.Services.AddRazorComponents()
+            .AddInteractiveServerComponents();
 
         builder.Services.AddHostedService<DhcpProxyService>();
         builder.Services.AddHostedService<TftpService>();
@@ -85,7 +92,16 @@ public static class Program
         builder.Services.AddHostedService<SmbService>();
         builder.Services.AddHostedService<NfsService>();
 
-        return builder.Build();
+        var http = builder.Configuration.GetSection(EverbootOptions.SectionName).GetSection("Http").Get<HttpOptions>() ?? new();
+        var managementHost = http.BindAddress is "+" or "*" ? "0.0.0.0" : http.BindAddress;
+        builder.WebHost.UseUrls($"http://{managementHost}:{http.ManagementPort}");
+
+        var app = builder.Build();
+        app.UseStaticFiles();
+        app.UseAntiforgery();
+        app.MapRazorComponents<App>()
+            .AddInteractiveServerRenderMode();
+        return app;
     }
 
     private static void HookProcessLevelHandlers(ILogger logger)

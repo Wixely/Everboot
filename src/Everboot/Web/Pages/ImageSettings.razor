@@ -1,0 +1,63 @@
+@page "/images/{Slug}"
+@inject BootCatalog Catalog
+@inject BootConfigGenerator Generator
+@inject ManagementAccess Access
+
+<PageTitle>@(entry is null ? "Image unavailable" : $"{entry.DisplayName} | Everboot")</PageTitle>
+@if (entry is null) {
+    <header class="page-head"><div class="page-head-copy"><div class="eyebrow">Image configuration</div><h1>Image unavailable</h1><p>The requested image is no longer in the catalog.</p></div></header>
+} else {
+    <header class="page-head"><div class="page-head-copy"><div class="eyebrow">Image configuration</div><h1>@entry.DisplayName</h1><p>Review automatic detection and tune the boot path for @entry.FileName.</p></div></header>
+    @if (notice is not null) { <p class="notice @(failed ? "error" : "")" role="status">@notice</p> }
+    <div class="settings-layout">
+        <section class="window"><div class="window-bar"><span class="window-title">Detection and effective settings</span><span class="window-meta">@(entry.Override is null ? "AUTOMATIC" : "OVERRIDDEN")</span></div><div class="window-body">
+            <table class="settings-table"><thead><tr><th>Property</th><th>Detected</th><th>Effective</th></tr></thead><tbody>
+                <tr><th>Profile</th><td>@(entry.DetectedMetadata.Profile?.DisplayName ?? "None")</td><td>@(entry.Metadata.Profile?.DisplayName ?? "None")</td></tr>
+                <tr><th>Windows generation</th><td>@entry.DetectedMetadata.WindowsEra</td><td>@entry.Metadata.WindowsEra</td></tr>
+                <tr><th>Volume label</th><td>@(entry.DetectedMetadata.VolumeLabel ?? "—")</td><td>@(entry.Metadata.VolumeLabel ?? "—")</td></tr>
+                <tr><th>Filesystem</th><td>@entry.DetectedMetadata.Layout</td><td>@entry.Metadata.Layout</td></tr>
+                <tr><th>Live filesystem</th><td>@(entry.DetectedMetadata.Squashfs ?? "—")</td><td>@(entry.Metadata.Squashfs ?? "—")</td></tr>
+                <tr><th>Available recipes</th><td>@string.Join(", ", (entry.DetectedMetadata.AvailableRecipes ?? []).Select(r => r.DisplayName))</td><td>@string.Join(", ", Generator.GetApplicableRecipes(entry).Select(r => r.DisplayName))</td></tr>
+            </tbody></table>
+            <p><strong>Detection criteria:</strong> @DetectionCriteria(entry.Metadata.Profile)</p><p><strong>Current boot path:</strong> <span class="badge">@Generator.BootSummary(entry)</span></p>
+        </div></section>
+        <section class="window"><div class="window-bar"><span class="window-title">Boot configuration</span><span class="window-meta">PERSISTED POLICY</span></div><div class="window-body">
+            <p class="form-help">Override incorrect detection or select a proven method for this image. Reset returns every field to automatic detection.</p>
+            <label>Display name<input @bind="displayName" maxlength="100" /></label>
+            <label>Detection profile<select @bind="profile"><option value="detected">Use automatic detection</option><option value="none">Generic image</option>@foreach (var item in DistroProfiles.All) { <option value="@item.Id">@item.DisplayName</option> }</select></label>
+            <label>Preferred boot method<select @bind="method"><option value="auto">Automatic (uses effective profile)</option><option value="sanhttp">HTTP SAN boot</option><option value="saniscsi">iSCSI SAN boot</option><option value="memdisk">MEMDISK</option><option value="wimboot">Windows wimboot</option>@foreach (var recipe in Generator.GetApplicableRecipes(entry)) { <option value="@($"direct-{recipe.Id}")">@recipe.DisplayName</option> }</select></label>
+            <p class="form-help">An unavailable method stops at boot failure; it does not silently choose another method.</p>
+            <details><summary>Custom Linux boot</summary><div class="field-grid"><label>Kernel path<input @bind="kernel" /></label><label>Initrd path<input @bind="initrd" /></label></div><label>Kernel arguments<textarea @bind="arguments" rows="3"></textarea></label><label>Live filesystem path<input @bind="squashfs" /></label><label><input type="checkbox" @bind="requiresNfs" /> Requires the NFS streaming service</label></details>
+            @if (!Access.IsLocal) { <label>Management key<input type="password" @bind="managementKey" autocomplete="current-password" /></label> }
+            <div class="form-actions"><button @onclick="Save">Save configuration</button><button class="secondary" @onclick="Reset">Reset to detection</button></div>
+        </div></section>
+    </div>
+    <footer class="page-footer">Everboot serves the original image without modifying it. Changes here affect generated boot instructions.</footer>
+}
+
+@code {
+    [Parameter] public string Slug { get; set; } = "";
+    private IsoEntry? entry; private long revision; private string? notice; private bool failed;
+    private string? displayName, kernel, initrd, arguments, squashfs, managementKey; private string profile = "detected", method = "auto"; private bool requiresNfs;
+    protected override void OnParametersSet() => Load();
+    private void Load()
+    {
+        Catalog.TryGetBySlug(Slug, out entry); if (entry is null) return;
+        var value = entry.Override; revision = Catalog.Policies.Snapshot.Revision; displayName = value?.DisplayName; profile = value?.Profile ?? "detected"; method = value?.Method ?? "auto"; kernel = value?.Kernel; initrd = value?.Initrd; arguments = value?.Arguments; squashfs = value?.Squashfs; requiresNfs = value?.RequiresNfs ?? false;
+    }
+    private void Save() => Change(false);
+    private void Reset() => Change(true);
+    private void Change(bool reset)
+    {
+        if (entry is null) return; failed = false;
+        try {
+            if (!Access.CanChange(managementKey)) throw new UnauthorizedAccessException("The management key is required for changes from another computer.");
+            Catalog.Policies.SaveImage(new(entry.FileName, Empty(displayName), profile, method, Empty(kernel), Empty(initrd), Empty(arguments), Empty(squashfs), requiresNfs), revision, reset);
+            Catalog.ForceRescan(); notice = reset ? "Automatic detection restored." : "Image configuration saved."; Load();
+        } catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or UnauthorizedAccessException or IOException) { failed = true; notice = ex.Message; }
+    }
+    private static string? Empty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+    private static string DetectionCriteria(DistroProfile? value) => value is null
+        ? "No profile matched this image."
+        : $"volume pattern {value.VolumeLabelPattern?.ToString() ?? "any"}; marker files {string.Join(", ", value.MarkerFiles)}.";
+}

@@ -1,0 +1,34 @@
+@inherits LayoutComponentBase
+@inject BootCatalog Catalog
+@inject NfsStatus NfsStatus
+@inject Microsoft.Extensions.Options.IOptions<EverbootOptions> Options
+@inject NavigationManager Navigation
+
+<header class="topbar">
+    <div class="workspace-tabs" aria-hidden="true"><span class="selected">1</span><span>2</span><span>3</span></div>
+    <div class="top-brand">EVERBOOT</div>
+    <div class="top-status"><span><i class="status-dot online"></i>SERVER ONLINE</span><span>@Catalog.Entries.Count IMAGES</span><span>@RuleCount RULES</span></div>
+</header>
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="brand-lockup"><div class="brand-mark">EB</div><div class="brand-copy"><strong>Everboot</strong><small>PXE control plane</small></div></div>
+        <nav class="side-nav" aria-label="Primary">
+            <NavLink href="/" Match="NavLinkMatch.All"><span class="nav-glyph">▤</span>Boot library</NavLink>
+            <NavLink href="/devices"><span class="nav-glyph">⌁</span>Device policies</NavLink>
+            <NavLink href="/diagnostics"><span class="nav-glyph">›_</span>Diagnostics</NavLink>
+        </nav>
+        <div class="side-panel">
+            <div class="side-panel-title">Runtime</div>
+            <div class="side-kv"><span>PXE HTTP</span><strong>:@Options.Value.Http.Port</strong></div>
+            <div class="side-kv"><span>NFS</span><strong>@NfsState</strong></div>
+            <div class="side-kv"><span>Policies</span><strong>@RuleCount</strong></div>
+            <code class="side-path">@Catalog.IsoDirectory</code>
+        </div>
+    </aside>
+    <main>@Body</main>
+</div>
+
+@code {
+    private int RuleCount => Catalog.Policies.Snapshot.DeviceRules?.Length ?? 0;
+    private string NfsState => !Options.Value.Nfs.Enabled ? "disabled" : NfsStatus.Running ? "online" : "starting";
+}

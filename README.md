@@ -52,6 +52,12 @@ reverse proxy; the built-in listener is HTTP. Page forms include CSRF protection
 Do not expose the loopback listener through an untrusted proxy: a loopback proxy
 connection is treated as local. The UI itself remains readable from the LAN.
 
+The management workspace is now implemented with server-side Blazor and runs in
+the Everboot process on `Http:ManagementPort` (8081 by default). PXE downloads
+remain on `Http:Port` (8080) while their range, HEAD and streaming behaviour is
+migrated to Kestrel and regression-tested. This temporary two-port boundary keeps
+the operational UI independent from the compatibility-sensitive boot transport.
+
 An explicitly selected unavailable method fails instead of silently changing
 methods. Custom kernel/initrd paths must exist inside the image; network and
 filesystem drivers still need to be included by the OS. This feature does not
@@ -406,7 +412,11 @@ Add or remove an ISO and the menu updates within ~500 ms - no restart needed. Th
 dotnet run --project src/Everboot
 ```
 
-Then drop an ISO into `data/isos/` and visit `http://localhost:8080/` for a human-readable index, or `http://localhost:8080/boot.ipxe` for the menu iPXE will see. Files inside an ISO are reachable at `http://localhost:8080/iso/<slug>/<path-inside-iso>` (used for the Windows boot chain).
+Then drop an ISO into `data/isos/` and visit `http://localhost:8081/` for the
+Blazor management workspace. The PXE transport remains at
+`http://localhost:8080/boot.ipxe`; files inside an ISO are reachable at
+`http://localhost:8080/iso/<slug>/<path-inside-iso>` (used for the Windows boot
+chain).
 
 Logs land in the terminal and on disk (`./logs/everboot-YYYY-MM-DD.NNN.log`, daily roll + 10 MB cap). Override the log directory with `EVERBOOT_LOG_DIR`.
 
@@ -452,7 +462,7 @@ For a real deployment (Portainer, Compose, etc.) use the sample stack at [exampl
 {
   "Everboot": {
     "DataDirectory": "./data",
-    "Http": { "Port": 8080, "BindAddress": "+" },
+    "Http": { "Port": 8080, "ManagementPort": 8081, "BindAddress": "+" },
     "Tftp": { "Port": 69, "BindAddress": "0.0.0.0", "MaxBlockSize": 1468 },
     "Iscsi": {
       "Enabled": true,
