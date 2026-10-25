@@ -170,7 +170,8 @@ Run the **same executable on the computer that will display the VM**:
 .\Everboot.exe --client http://boot-server:8080
 ```
 
-The local browser library opens automatically. Click **Start virtual machine**
+The local Blazor library opens automatically on a loopback-only Kestrel port.
+Click **Start virtual machine**
 beside an image. The launcher detects QEMU beside Everboot in `qemu/`, in its
 usual Windows installation directory, or on PATH. A shortcut containing the
 command above gives repeatable one-click entry to the library. The server address

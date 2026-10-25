@@ -331,20 +331,19 @@ try
     try { await NfsService.ReadRecordAsync(new MemoryStream(huge), default); throw new Exception("Oversized frame accepted."); }
     catch (InvalidDataException) { checks++; }
     config.Http.BindAddress = "localhost"; config.Http.Port = FreePort();
-    config.Http.UseLegacyListener = true;
-    using (var http = new HttpFileService(NullLogger<HttpFileService>.Instance, catalog, generator, options, status))
+    using (var http = new HttpFileService(NullLogger<HttpFileService>.Instance, catalog, generator, options, useLegacyListener: true))
     using (var client = new HttpClient { BaseAddress = new Uri($"http://localhost:{config.Http.Port}"), Timeout = TimeSpan.FromSeconds(5) })
     {
         await http.StartAsync(default);
         try
         {
-            string? html = null;
-            for (var i = 0; i < 100 && html is null; i++)
+            string? bootstrap = null;
+            for (var i = 0; i < 100 && bootstrap is null; i++)
             {
-                try { html = await client.GetStringAsync("/"); }
+                try { bootstrap = await client.GetStringAsync("/boot.ipxe"); }
                 catch (HttpRequestException) { await Task.Delay(20); }
             }
-            Check(html?.Contains("NFS: Listening") == true && html.Contains("Streaming candidate"), "HTTP library reports live service and compatibility");
+            Check(bootstrap?.Contains("mac=${netX/mac}&ip=${netX/ip}") == true, "transitional listener serves PXE bootstrap");
             var kestrelBuilder = WebApplication.CreateBuilder();
             kestrelBuilder.WebHost.UseKestrel(server => server.Listen(IPAddress.Loopback, 0));
             await using var kestrel = kestrelBuilder.Build();
@@ -364,8 +363,8 @@ try
             Check(JsonSerializer.Deserialize<VmImage[]>(await kestrelClient.GetStringAsync("/catalog.json"))?.Length == catalog.Entries.Count,
                 "Kestrel adapter serves VM catalog");
             await kestrel.StopAsync();
-            using var head = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/"));
-            Check(head.IsSuccessStatusCode && (await head.Content.ReadAsByteArrayAsync()).Length == 0, "library HEAD has no body");
+            using var head = await client.SendAsync(new HttpRequestMessage(HttpMethod.Head, "/boot.ipxe"));
+            Check(head.IsSuccessStatusCode && (await head.Content.ReadAsByteArrayAsync()).Length == 0, "PXE menu HEAD has no body");
             var request = new HttpRequestMessage(HttpMethod.Get, "/iso/ubuntu/casper/filesystem.squashfs");
             request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(2047, 5046);
             using var range = await client.SendAsync(request);
@@ -439,8 +438,6 @@ try
             Check(vmArgs.Contains("ide-cd,drive=media,bus=ide.1,unit=0") && vmArgs.Contains("128") && vmArgs.Contains("none"), "legacy VM has IDE CD and small RAM preset");
             var vmCommand = QemuLaunch.Command("qemu", vmArgs);
             Check(!vmCommand.UseShellExecute && vmCommand.ArgumentList.Contains(vmArgs[vmArgs.IndexOf("-blockdev") + 1]), "QEMU arguments bypass shell expansion");
-            var vmHtml = VmClient.Html([vmImage with { Name = "<script>alert(1)</script>" }], "test-token", "<error>", 1);
-            Check(!vmHtml.Contains("<script>") && vmHtml.Contains("&lt;error&gt;") && vmHtml.Contains(" disabled"), "VM library encodes remote names and disables duplicate launches");
             Check(vmArgs.Contains("order=cd,once=d,menu=on") && QemuLaunch.Arguments(bridge.Block, "legacy", "disk.qcow2", true, false, false).Contains("order=cd,menu=on"),
                 "new machines boot installation CD once; saved machines prefer their hard disk");
             var startup = Path.Combine(catalog.TftpDirectory, "startup.img");
@@ -465,7 +462,6 @@ try
                 File.WriteAllText(sidecar, invalid);
                 configured = JsonSerializer.Deserialize<VmImage[]>(await client.GetStringAsync("/catalog.json"))!.Single(i => i.Path == "/isos/win98.iso");
                 Check(configured.Problem is not null && configured.Boot is null, "invalid boot profile blocks only its image");
-                Check(!VmClient.Html([configured], "test", null, 0).Contains("<button"), "unusable boot profile has no Start button");
             }
             foreach (var invalid in new[] { asset with { Path = "//outside.example/file" }, asset with { Path = "/files/%2e%2e%2fsecret" }, asset with { Size = 5L << 20 }, asset with { Sha256 = "../unsafe" } })
             {
@@ -515,32 +511,7 @@ try
             Check(policies.Decide(catalog.Entries, null, "192.0.2.12").Images.Count == 0, "empty allowlist exposes no images");
             policies.SaveRule(subnet with { Ip = "2001:db8::/32", Images = null }, policies.Snapshot.Revision);
             Check(policies.Decide(catalog.Entries, null, "2001:db8::42").Rule?.Id == "subnet", "IPv6 CIDR supported");
-            var management = await client.GetStringAsync("/images/ubuntu");
-            Check(management.Contains("Detection and effective settings") && management.Contains("Reset to detection"), "image settings show detection and reset");
-            string Hidden(string page, string name) => System.Text.RegularExpressions.Regex.Match(page, "name='" + name + "' value='([^']*)'").Groups[1].Value;
-            using (var denied = await client.PostAsync("/images/ubuntu", new FormUrlEncodedContent(new Dictionary<string, string> { ["method"] = "sanhttp" })))
-                Check(denied.StatusCode == HttpStatusCode.Forbidden, "management rejects missing CSRF token");
-            var fields = new Dictionary<string, string> { ["token"] = Hidden(management, "token"), ["revision"] = Hidden(management, "revision"), ["display"] = "<test>", ["method"] = "sanhttp" };
-            using (var saved = await client.PostAsync("/images/ubuntu", new FormUrlEncodedContent(fields)))
-                Check(saved.IsSuccessStatusCode && (await saved.Content.ReadAsStringAsync()).Contains("&lt;test&gt;"), "management saves and HTML-encodes overrides");
-            using (var stale = await client.PostAsync("/images/ubuntu", new FormUrlEncodedContent(fields)))
-                Check(stale.StatusCode == HttpStatusCode.Conflict, "stale form rejected");
-            policies.SaveImage(new("ubuntu.iso"), policies.Snapshot.Revision, reset: true); catalog.ForceRescan();
             foreach (var rule in policies.Snapshot.DeviceRules!) policies.SaveRule(rule, policies.Snapshot.Revision, delete: true);
-            var rulePage = await client.GetStringAsync("/devices");
-            var ruleFields = new Dictionary<string, string> { ["token"] = Hidden(rulePage, "token"), ["revision"] = Hidden(rulePage, "revision"),
-                ["id"] = "web-rule", ["name"] = "Web rule", ["priority"] = "1", ["enabled"] = "on", ["mac"] = "52:54:00:12:34:56", ["mode"] = "force", ["forced"] = "ubuntu.iso" };
-            using (var savedRule = await client.PostAsync("/devices", new FormUrlEncodedContent(ruleFields)))
-                Check(savedRule.IsSuccessStatusCode && policies.Snapshot.DeviceRules!.Single().ForcedImage == "ubuntu.iso", "device form persists forced boot rule");
-            Check((await client.GetStringAsync("/devices?preview=1&mac=52:54:00:12:34:56")).Contains("Direct boot:"), "UI preview reflects rule decision");
-            ruleFields["revision"] = policies.Snapshot.Revision.ToString(); ruleFields["action"] = "delete";
-            using (var deletedRule = await client.PostAsync("/devices", new FormUrlEncodedContent(ruleFields)))
-                Check(deletedRule.IsSuccessStatusCode && policies.Snapshot.DeviceRules!.Length == 0, "device form deletes rule");
-            if (args.Contains("--serve-ui"))
-            {
-                Console.WriteLine($"UI fixture ready: {client.BaseAddress} ({checks} checks passed). Press Enter to stop.");
-                Console.ReadLine();
-            }
         }
         finally { await http.StopAsync(default); }
     }

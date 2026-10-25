@@ -80,7 +80,7 @@ using var logs = LoggerFactory.Create(builder => builder.AddConsole().SetMinimum
 var options = Options.Create(config);
 using var catalog = new BootCatalog(options, new IsoInspector(NullLogger<IsoInspector>.Instance), NullLogger<BootCatalog>.Instance);
 var status = new NfsStatus();
-using var http = new HttpFileService(NullLogger<HttpFileService>.Instance, catalog, new BootConfigGenerator(catalog, options), options, status);
+using var http = new HttpFileService(NullLogger<HttpFileService>.Instance, catalog, new BootConfigGenerator(catalog, options), options);
 var webBuilder = WebApplication.CreateBuilder();
 webBuilder.Logging.ClearProviders();
 webBuilder.WebHost.UseKestrel(server => server.Listen(IPAddress.Any, port));

@@ -41,12 +41,6 @@ internal sealed class HttpOptions
     public int Port { get; set; } = 8080;
 
     /// <summary>
-    /// Transitional compatibility switch used by the transport probe. Normal
-    /// Everboot hosting uses Kestrel for the Blazor UI and PXE endpoints.
-    /// </summary>
-    public bool UseLegacyListener { get; set; }
-
-    /// <summary>
     /// Kestrel bind host. "+" listens on every interface, "localhost" is the
     /// safe development default, or set a specific IP.
     /// </summary>

@@ -8,7 +8,10 @@ using Everboot.Services.Nfs;
 using Everboot.Services.Smb;
 using Everboot.Services.Vm;
 using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
 
 if (args.FirstOrDefault() == "--inspect")
 {
@@ -37,6 +40,7 @@ if (Directory.Exists(root)) throw new IOException("Probe server directory must b
 Directory.CreateDirectory(Path.Combine(root, "isos"));
 Console.WriteLine("Probe server data: " + root);
 var source = args.FirstOrDefault();
+if (source == "--verify-launcher") source = null;
 var file = source is null || args.Contains("--raw") ? "disk.img" : "boot.iso";
 if (source is null)
 {
@@ -58,13 +62,28 @@ var config = new EverbootOptions { DataDirectory = root, CatalogRescanIntervalSe
 config.Http.BindAddress = "localhost"; config.Http.Port = port;
 var options = Options.Create(config);
 using var catalog = new BootCatalog(options, new IsoInspector(NullLogger<IsoInspector>.Instance), NullLogger<BootCatalog>.Instance);
-using var server = new HttpFileService(NullLogger<HttpFileService>.Instance, catalog, new BootConfigGenerator(catalog, options), options, new NfsStatus());
+using var server = new HttpFileService(NullLogger<HttpFileService>.Instance, catalog, new BootConfigGenerator(catalog, options), options);
+var webBuilder = WebApplication.CreateBuilder();
+webBuilder.Logging.ClearProviders();
+webBuilder.WebHost.UseKestrel(kestrel => kestrel.Listen(IPAddress.Loopback, port));
+await using var web = webBuilder.Build();
+web.Map("/{**path}", server.HandleKestrelAsync);
 using var http = new HttpClient();
 Process? qemu = null;
 try
 {
-    await server.StartAsync(default);
+    await web.StartAsync();
     var uri = new Uri($"http://localhost:{port}");
+    await using (var launcher = new VmLauncherState(uri, null, machineData, default))
+    {
+        await launcher.RefreshAsync();
+        if (launcher.Images.Length != 1 || launcher.NoticeIsError) throw new Exception("Blazor VM launcher state did not load the Kestrel catalog.");
+    }
+    if (args.Contains("--verify-launcher"))
+    {
+        Console.WriteLine("PASS: Blazor VM launcher state loaded one image from the Kestrel catalog.");
+        return 0;
+    }
     var metadata = catalog.Entries.Single().Metadata;
     if (args.Contains("--verify-wim"))
     {
@@ -198,6 +217,6 @@ try
 finally
 {
     if (qemu is not null) { if (!qemu.HasExited) qemu.Kill(true); qemu.Dispose(); }
-    await server.StopAsync(default); catalog.Dispose();
+    await web.StopAsync(); catalog.Dispose();
     if (explicitServerData is null) Directory.Delete(root, true); // Only this probe's generated temporary tree.
 }

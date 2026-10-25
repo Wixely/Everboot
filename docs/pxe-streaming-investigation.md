@@ -296,3 +296,9 @@ generated image menu. The fixture ISO was 698 KiB and the retained output
 contained only the small fixture copy, QEMU metadata and a screenshot; no target
 disk was created. This proves the Kestrel path reaches an emulated PXE client.
 The earlier operating-system runs remain the evidence for post-handoff support.
+
+The optional `Everboot --client` virtual-machine launcher was migrated last. It
+now binds Kestrel to an ephemeral loopback port and renders its catalog and VM
+controls as interactive Blazor components. Its state loader is covered by
+`VmProbe --verify-launcher`; a rendered browser check confirmed the shared theme,
+catalog card and local-only launcher address.

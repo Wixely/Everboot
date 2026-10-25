@@ -7,7 +7,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using DiscUtils;
 using Everboot.Configuration;
-using Everboot.Services.Nfs;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -29,7 +28,7 @@ internal sealed partial class HttpFileService : BackgroundService
     private readonly BootCatalog _catalog;
     private readonly BootConfigGenerator _generator;
     private readonly EverbootOptions _options;
-    private readonly NfsStatus _nfsStatus;
+    private readonly bool _useLegacyListener;
     private long _dosBytesRead;
     public long DosBytesRead => Interlocked.Read(ref _dosBytesRead);
     private readonly Lock _dosGate = new();
@@ -39,19 +38,25 @@ internal sealed partial class HttpFileService : BackgroundService
         ILogger<HttpFileService> logger,
         BootCatalog catalog,
         BootConfigGenerator generator,
+        IOptions<EverbootOptions> options) : this(logger, catalog, generator, options, false) { }
+
+    internal HttpFileService(
+        ILogger<HttpFileService> logger,
+        BootCatalog catalog,
+        BootConfigGenerator generator,
         IOptions<EverbootOptions> options,
-        NfsStatus nfsStatus)
+        bool useLegacyListener)
     {
         _logger = logger;
         _catalog = catalog;
         _generator = generator;
         _options = options.Value;
-        _nfsStatus = nfsStatus;
+        _useLegacyListener = useLegacyListener;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (!_options.Http.UseLegacyListener)
+        if (!_useLegacyListener)
         {
             _logger.LogInformation("PXE HTTP endpoints are hosted by Kestrel");
             return;
@@ -116,100 +121,7 @@ internal sealed partial class HttpFileService : BackgroundService
 
         try
         {
-            if (path == "/devices" || path.StartsWith("/images/", StringComparison.Ordinal))
-            {
-                await HandleManagementAsync(request, response, path, stoppingToken);
-                return;
-            }
-            if (request.HttpMethod == "POST" && path == "/refresh")
-            {
-                await HandleRefreshAsync(response, stoppingToken).ConfigureAwait(false);
-                return;
-            }
-
-            if (request.HttpMethod is not ("GET" or "HEAD"))
-            {
-                response.StatusCode = (int)HttpStatusCode.MethodNotAllowed;
-                response.AddHeader("Allow", "GET, HEAD, POST");
-                return;
-            }
-
-            if (path is "/" or "/index.html")
-            {
-                await WriteIndexAsync(request, response, stoppingToken).ConfigureAwait(false);
-                return;
-            }
-
-            if (path == "/catalog.json")
-            {
-                await WriteCatalogAsync(bootRequest, bootResponse, stoppingToken);
-                return;
-            }
-
-            if (path is "/diagnose" or "/diagnose.html")
-            {
-                await WriteDiagnoseAsync(response, stoppingToken).ConfigureAwait(false);
-                return;
-            }
-
-            if (path is "/boot.ipxe" or "/boot.cfg")
-            {
-                await WriteIpxeMenuAsync(bootRequest, bootResponse, stoppingToken).ConfigureAwait(false);
-                return;
-            }
-
-            if (path.StartsWith("/winpe/", StringComparison.Ordinal))
-            {
-                var parts = path.Split('/');
-                if (parts.Length != 4 || !_options.Smb.Enabled || _options.Smb.Port != 445 ||
-                    !_catalog.TryGetBySlug(parts[2], out var entry) || entry?.Metadata.WindowsFiles is null ||
-                    parts[3] is not ("winpeshl.ini" or "everboot.cmd"))
-                { response.StatusCode = 404; return; }
-                string script;
-                try { script = parts[3] == "winpeshl.ini" ? WinPeStartup.Shell : WinPeStartup.Script(ResolveAuthority(bootRequest), entry.Slug); }
-                catch (ArgumentException) { response.StatusCode = 400; return; }
-                response.Headers["Cache-Control"] = "no-store";
-                await WritePlainTextAsync(bootRequest, bootResponse, script, stoppingToken);
-                return;
-            }
-
-            if (path.StartsWith("/isos/", StringComparison.Ordinal))
-            {
-                var rawName = path["/isos/".Length..];
-                await WriteIsoAsync(bootRequest, bootResponse, rawName, stoppingToken).ConfigureAwait(false);
-                return;
-            }
-
-            if (path.StartsWith("/iso/", StringComparison.Ordinal))
-            {
-                var rest = path["/iso/".Length..];
-                var slash = rest.IndexOf('/');
-                if (slash <= 0 || slash == rest.Length - 1)
-                {
-                    response.StatusCode = (int)HttpStatusCode.NotFound;
-                    return;
-                }
-                var slug = rest[..slash];
-                var innerPath = Uri.UnescapeDataString(rest[(slash + 1)..]);
-                await WriteIsoContentAsync(bootRequest, bootResponse, slug, innerPath, stoppingToken).ConfigureAwait(false);
-                return;
-            }
-
-            if (path.StartsWith("/dos-source/", StringComparison.Ordinal))
-            {
-                await WriteDosSourceAsync(bootRequest, bootResponse, path["/dos-source/".Length..], stoppingToken);
-                return;
-            }
-
-            if (path.StartsWith("/files/", StringComparison.Ordinal))
-            {
-                var rawName = path["/files/".Length..];
-                await WriteSupportFileAsync(bootRequest, bootResponse, rawName, stoppingToken).ConfigureAwait(false);
-                return;
-            }
-
-            response.StatusCode = (int)HttpStatusCode.NotFound;
-            await WritePlainTextAsync(bootRequest, bootResponse, "not found\n", stoppingToken).ConfigureAwait(false);
+            await HandleBootTransportAsync(bootRequest, bootResponse, stoppingToken).ConfigureAwait(false);
         }
         catch (HttpListenerException ex)
         {
@@ -324,141 +236,6 @@ internal sealed partial class HttpFileService : BackgroundService
         }
 
         _logger.LogInformation("Served iPXE menu to {Remote} ({Count} entries)", request.RemoteEndPoint, _catalog.Entries.Count);
-    }
-
-    private async Task WriteIndexAsync(HttpListenerRequest request, HttpListenerResponse response, CancellationToken ct)
-    {
-        var sb = new StringBuilder();
-        sb.AppendLine("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Everboot | Boot library</title>");
-        sb.Append("<style>").Append(ThemeCss).AppendLine("</style></head>");
-        AppendShellStart(sb, "library", "Deployment workspace", "Boot image library", "Manage the operating systems and tools offered to PXE clients across your network.",
-            "<form method='post' action='/refresh'><button type='submit'>Refresh library</button></form><a class='button secondary' href='/boot.ipxe'>View iPXE script</a>");
-        var state = !_options.Nfs.Enabled ? "Disabled" : _nfsStatus.Running ? "Listening" : "Starting";
-        var entries = _catalog.Entries;
-        var streamReady = entries.Count(e => _generator.GetApplicableRecipes(e).Any(r => r.RequiresNfs));
-        var overrides = entries.Count(e => e.Override is not null);
-        var rules = _catalog.Policies.Snapshot.DeviceRules?.Length ?? 0;
-        sb.Append("<section class='stats-grid' aria-label='Library summary'><div class='stat-card'><span class='stat-label'>Images</span><strong class='stat-value'>").Append(entries.Count).Append("</strong><span class='stat-note'>ready in catalog</span></div><div class='stat-card'><span class='stat-label'>Streaming</span><strong class='stat-value'>").Append(streamReady).Append("</strong><span class='stat-note'>NFS candidates</span></div><div class='stat-card'><span class='stat-label'>Overrides</span><strong class='stat-value'>").Append(overrides).Append("</strong><span class='stat-note'>custom image policies</span></div><div class='stat-card'><span class='stat-label'>Device policies</span><strong class='stat-value'>").Append(rules).Append("</strong><span class='stat-note'>ordered matches</span></div></section>");
-        sb.Append($"<section class='window'><div class='window-bar'><span class='window-title'>Runtime status</span><span class='window-meta'>NFS: {state}</span></div><div class='window-body'><div class='section-intro'><p><strong>NFS: {state}</strong> · {FormatSize(_nfsStatus.BytesRead)} served across {_nfsStatus.Reads:N0} reads since startup.</p><a href='/diagnose'>Open detection diagnostics →</a></div><p class='form-help'>Compatible Linux layouts read files from the original ISO on demand. A streaming candidate has the expected files; it is not proof of a successful boot.</p></div></section>");
-        sb.Append("<section class='window'><div class='window-bar'><span class='window-title'>Image inventory</span><span class='window-meta'>").Append(entries.Count).Append(" ITEMS</span></div><div class='window-body'>");
-        if (entries.Count == 0)
-        {
-            sb.AppendLine("<div class='empty-state'><strong>No boot images found</strong><p>Add <code>*.iso</code> or <code>*.img</code> files to the configured image folder, then refresh the library.</p></div>");
-        }
-        else
-        {
-            sb.AppendLine("<div class='image-list'>");
-            foreach (var entry in entries)
-            {
-                var url = $"/isos/{Uri.EscapeDataString(entry.FileName)}";
-                var extension = Path.GetExtension(entry.FileName).TrimStart('.');
-                sb.Append("<article class='image-row'><div class='media-icon'>").Append(WebUtility.HtmlEncode(extension)).Append("</div><div><span class='image-name'>").Append(WebUtility.HtmlEncode(entry.DisplayName)).Append("</span><div class='image-sub'>")
-                  .Append(WebUtility.HtmlEncode(entry.FileName)).Append(" · ").Append(FormatSize(entry.SizeBytes)).Append(" · ").Append(WebUtility.HtmlEncode(entry.Metadata.Profile?.DisplayName ?? "Unclassified image"))
-                  .Append(entry.Override is null ? "" : " · override active").Append("</div></div><div class='image-method'><span class='boot-state'>").Append(WebUtility.HtmlEncode(_generator.BootSummary(entry))).Append("</span></div><div class='row-actions'><a href='/images/")
-                  .Append(entry.Slug).Append("'>Configure</a><a href='").Append(url).Append("'>Download</a></div></article>");
-            }
-            sb.AppendLine("</div>");
-        }
-        sb.AppendLine("</div></section>");
-        AppendShellEnd(sb);
-
-        var bytes = Encoding.UTF8.GetBytes(sb.ToString());
-        response.StatusCode = (int)HttpStatusCode.OK;
-        response.ContentType = "text/html; charset=utf-8";
-        response.ContentLength64 = bytes.Length;
-        if (request.HttpMethod != "HEAD") await response.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
-    }
-
-    private async Task HandleRefreshAsync(HttpListenerResponse response, CancellationToken ct)
-    {
-        _logger.LogInformation("Refresh catalog requested via web UI");
-        _catalog.ForceRescan();
-        response.StatusCode = (int)HttpStatusCode.SeeOther;
-        response.AddHeader("Location", "/");
-        response.ContentLength64 = 0;
-        await Task.CompletedTask;
-    }
-
-    private async Task WriteDiagnoseAsync(HttpListenerResponse response, CancellationToken ct)
-    {
-        var entries = _catalog.Entries;
-        var sb = new StringBuilder(8192);
-
-        sb.AppendLine("<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Everboot | Detection diagnostics</title>");
-        sb.Append("<style>").Append(ThemeCss).AppendLine("</style></head>");
-        AppendShellStart(sb, "diagnostics", "Detection workspace", "Image diagnostics", "Inspect the filesystem evidence Everboot used to classify every image and choose its boot recipes.");
-        sb.Append("<section class='window'><div class='window-bar'><span class='window-title'>Catalog inspection</span><span class='window-meta'>").Append(entries.Count).Append(" IMAGES</span></div><div class='window-body'>");
-
-        if (entries.Count == 0)
-        {
-            sb.AppendLine("<div class='empty-state'><strong>No images to inspect</strong><p>Add media to the boot library and refresh the catalog.</p></div>");
-        }
-        else
-        {
-            sb.AppendLine("<div class='wrap'><table><thead><tr>");
-            sb.AppendLine("<th>File</th><th>Size</th><th>Volume label</th><th>Layout</th><th>Windows era</th><th>Profile</th><th>Direct boot</th><th>Floppy</th>");
-            sb.AppendLine("</tr></thead><tbody>");
-
-            foreach (var entry in entries)
-            {
-                var m = entry.Metadata;
-                var profileCell = m.Profile is { } p
-                    ? $"<span class=\"yes\">{WebUtility.HtmlEncode(p.Id)}</span><br><small>{WebUtility.HtmlEncode(p.DisplayName)} &middot; {p.Family}</small>"
-                    : "<span class=\"no\">(no match)</span>";
-
-                var layoutCell = m.Layout == IsoLayout.None
-                    ? "<span class=\"no\">none (raw image)</span>"
-                    : WebUtility.HtmlEncode(m.Layout.ToString());
-
-                var eraCell = m.WindowsEra == WindowsBootEra.None
-                    ? "<span class=\"no\">none</span>"
-                    : (m.WindowsEra == WindowsBootEra.Modern ? "<span class=\"yes\">Modern</span>" : $"<span class=\"warn\">{m.WindowsEra}</span>");
-
-                string directBootCell;
-                var recipes = _generator.GetApplicableRecipes(entry);
-                if (recipes.Count > 0)
-                {
-                    var recipeIds = string.Join(", ", recipes.Select(r => WebUtility.HtmlEncode(r.Id)));
-                    var squashfsLine = m.Squashfs is null
-                        ? string.Empty
-                        : $"<br><small>squashfs: <code>{WebUtility.HtmlEncode(m.Squashfs)}</code></small>";
-                    directBootCell = $"<span class=\"yes\">{recipes.Count} recipe(s)</span><br><small>{recipeIds}</small>{squashfsLine}<br><small>{WebUtility.HtmlEncode(_generator.BootSummary(entry))}</small>";
-                }
-                else
-                {
-                    directBootCell = "<span class=\"no\">no</span>";
-                }
-
-                var floppyCell = entry.IsLikelyFloppy ? "<span class=\"yes\">yes</span>" : "<span class=\"no\">no</span>";
-
-                sb.Append("<tr>")
-                  .Append("<td>").Append(WebUtility.HtmlEncode(entry.FileName)).Append("<br><small>slug: <code>").Append(WebUtility.HtmlEncode(entry.Slug)).Append("</code></small></td>")
-                  .Append("<td>").Append(FormatSize(entry.SizeBytes)).Append("</td>")
-                  .Append("<td>").Append(m.VolumeLabel is null ? "<span class=\"no\">none</span>" : $"<code>{WebUtility.HtmlEncode(m.VolumeLabel)}</code>").Append("</td>")
-                  .Append("<td>").Append(layoutCell).Append("</td>")
-                  .Append("<td>").Append(eraCell).Append("</td>")
-                  .Append("<td>").Append(profileCell).Append("</td>")
-                  .Append("<td>").Append(directBootCell).Append("</td>")
-                  .Append("<td>").Append(floppyCell).Append("</td>")
-                  .AppendLine("</tr>");
-            }
-            sb.AppendLine("</tbody></table></div>");
-
-            sb.AppendLine("<details><summary>How to read this report</summary><ul>");
-            sb.AppendLine("<li><strong>Profile = (no match)</strong> means none of the codified distro patterns recognised this image. It falls through to plain sanboot. To make detection match, the volume label needs to start with the expected prefix (e.g. <code>Ubuntu</code>, <code>Pop_OS</code>) <em>and</em> the expected marker files must exist at the expected paths inside the ISO.</li>");
-            sb.AppendLine("<li><strong>Direct boot = yes</strong> means the iPXE menu emits a direct kernel+initrd entry for this image. <strong>no</strong> means it sanboots.</li>");
-            sb.AppendLine("<li><strong>Layout = none (raw image)</strong> means we couldn't read an ISO9660 or UDF filesystem inside - either a raw disk image (typical for <code>.img</code>) or a corrupt ISO.</li>");
-            sb.AppendLine("</ul></details>");
-        }
-
-        sb.AppendLine("</div></section>");
-        AppendShellEnd(sb);
-
-        var bytes = Encoding.UTF8.GetBytes(sb.ToString());
-        response.StatusCode = (int)HttpStatusCode.OK;
-        response.ContentType = "text/html; charset=utf-8";
-        response.ContentLength64 = bytes.Length;
-        await response.OutputStream.WriteAsync(bytes, ct).ConfigureAwait(false);
     }
 
     private async Task WriteIsoAsync(BootHttpRequest request, BootHttpResponse response, string rawName, CancellationToken ct)
