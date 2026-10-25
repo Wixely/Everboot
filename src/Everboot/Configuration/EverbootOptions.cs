@@ -10,6 +10,13 @@ internal sealed class EverbootOptions
     public string DataDirectory { get; set; } = "./data";
 
     /// <summary>
+    /// Optional image-library directory. When unset, images are read from
+    /// <c>&lt;DataDirectory&gt;/isos</c>. This lets local development or a NAS
+    /// mount supply images without moving policy and TFTP state.
+    /// </summary>
+    public string? IsoDirectory { get; set; }
+
+    /// <summary>
     /// Periodic catalog rescan interval in seconds, in addition to the
     /// FileSystemWatcher-driven rescans. Catches changes when the watcher
     /// misses events (bind-mounts, network FS, Docker volumes). Set to 0

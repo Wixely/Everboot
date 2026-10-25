@@ -6,22 +6,16 @@
 
 <PageTitle>Boot library | Everboot</PageTitle>
 <header class="page-head">
-    <div class="page-head-copy"><div class="eyebrow">Deployment workspace</div><h1>Boot image library</h1><p>Manage the operating systems and tools offered to PXE clients across your network.</p></div>
+    <div class="page-head-copy"><h1>Boot library</h1></div>
     <div class="head-actions"><button @onclick="Refresh">Refresh library</button><a class="button secondary" href="@PxeUrl">View iPXE script</a></div>
 </header>
 @if (notice is not null) { <p class="notice" role="status">@notice</p> }
-<section class="stats-grid" aria-label="Library summary">
-    <div class="stat-card"><span class="stat-label">Images</span><strong class="stat-value">@Entries.Count</strong><span class="stat-note">ready in catalog</span></div>
-    <div class="stat-card"><span class="stat-label">Streaming</span><strong class="stat-value">@StreamReady</strong><span class="stat-note">NFS candidates</span></div>
-    <div class="stat-card"><span class="stat-label">Overrides</span><strong class="stat-value">@OverrideCount</strong><span class="stat-note">custom image policies</span></div>
-    <div class="stat-card"><span class="stat-label">Device policies</span><strong class="stat-value">@RuleCount</strong><span class="stat-note">ordered matches</span></div>
+<section class="service-band" aria-label="Streaming service status">
+    <span class="service-signal" aria-hidden="true"></span>
+    <div><strong>NFS streaming: @NfsState</strong><p>@FormatSize(NfsStatus.BytesRead) served in @NfsStatus.Reads.ToString("N0") reads.</p></div>
 </section>
 <section class="window">
-    <div class="window-bar"><span class="window-title">Runtime status</span><span class="window-meta">NFS: @NfsState</span></div>
-    <div class="window-body"><div class="section-intro"><p><strong>NFS: @NfsState</strong> · @FormatSize(NfsStatus.BytesRead) served across @NfsStatus.Reads.ToString("N0") reads since startup.</p><a href="/diagnostics">Open detection diagnostics →</a></div><p class="form-help">Compatible Linux layouts read files from the original ISO on demand. A streaming candidate has the expected files; it is not proof of a successful boot.</p></div>
-</section>
-<section class="window">
-    <div class="window-bar"><span class="window-title">Image inventory</span><span class="window-meta">@Entries.Count ITEMS</span></div>
+    <div class="window-bar"><span class="window-title">Images</span><span class="window-meta">@Entries.Count</span></div>
     <div class="window-body">
         @if (Entries.Count == 0) { <div class="empty-state"><strong>No boot images found</strong><p>Add <code>*.iso</code> or <code>*.img</code> files to the configured image folder, then refresh the library.</p></div> }
         else {
@@ -29,23 +23,19 @@
                 @foreach (var entry in Entries) {
                     <article class="image-row" @key="entry.FileName">
                         <div class="media-icon">@Path.GetExtension(entry.FileName).TrimStart('.')</div>
-                        <div><span class="image-name">@entry.DisplayName</span><div class="image-sub">@entry.FileName · @FormatSize(entry.SizeBytes) · @(entry.Metadata.Profile?.DisplayName ?? "Unclassified image")@(entry.Override is null ? "" : " · override active")</div></div>
+                        <div><span class="image-name">@entry.DisplayName</span><div class="image-sub">@entry.FileName <span aria-hidden="true">/</span> @FormatSize(entry.SizeBytes) <span aria-hidden="true">/</span> @(entry.Metadata.Profile?.DisplayName ?? "Unclassified image")@(entry.Override is null ? "" : " / override active")</div></div>
                         <div class="image-method"><span class="boot-state">@Generator.BootSummary(entry)</span></div>
-                        <div class="row-actions"><a href="@($"/images/{entry.Slug}")">Configure</a><a href="@Pxe($"/isos/{Uri.EscapeDataString(entry.FileName)}")">Download</a></div>
+                        <div class="row-actions"><a class="row-primary" href="@($"/images/{entry.Slug}")">Configure</a><a href="@Pxe($"/isos/{Uri.EscapeDataString(entry.FileName)}")">Download</a></div>
                     </article>
                 }
             </div>
         }
     </div>
 </section>
-<footer class="page-footer">The Blazor workspace and PXE endpoints share Everboot's live catalog and one Kestrel listener.</footer>
 
 @code {
     private string? notice;
     private IReadOnlyList<IsoEntry> Entries => Catalog.Entries;
-    private int StreamReady => Entries.Count(e => Generator.GetApplicableRecipes(e).Any(r => r.RequiresNfs));
-    private int OverrideCount => Entries.Count(e => e.Override is not null);
-    private int RuleCount => Catalog.Policies.Snapshot.DeviceRules?.Length ?? 0;
     private string NfsState => !Options.Value.Nfs.Enabled ? "Disabled" : NfsStatus.Running ? "Listening" : "Starting";
     private string PxeUrl => Pxe("/boot.ipxe");
     private string Pxe(string path) => $"http://{new Uri(Navigation.BaseUri).Host}:{Options.Value.Http.Port}{path}";

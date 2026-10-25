@@ -53,7 +53,9 @@ internal sealed class BootCatalog : IDisposable
         _logger = logger;
         _inspector = inspector;
         DataDirectory = Path.GetFullPath(options.Value.DataDirectory);
-        IsoDirectory = Path.Combine(DataDirectory, "isos");
+        IsoDirectory = string.IsNullOrWhiteSpace(options.Value.IsoDirectory)
+            ? Path.Combine(DataDirectory, "isos")
+            : Path.GetFullPath(options.Value.IsoDirectory);
         TftpDirectory = Path.Combine(DataDirectory, "tftp");
         Directory.CreateDirectory(IsoDirectory);
         Directory.CreateDirectory(TftpDirectory);

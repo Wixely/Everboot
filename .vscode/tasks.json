@@ -117,6 +117,30 @@
       "problemMatcher": "$msCompile"
     },
     {
+      "label": "publish:lan-debug",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "publish",
+        "${workspaceFolder}/src/Everboot/Everboot.csproj",
+        "-c",
+        "Debug",
+        "-r",
+        "win-x64",
+        "--self-contained",
+        "true",
+        "-p:PublishSingleFile=true",
+        "-p:IncludeNativeLibrariesForSelfExtract=true",
+        "-o",
+        "${workspaceFolder}/artifacts/streaming-win-x64"
+      ],
+      "problemMatcher": "$msCompile",
+      "presentation": {
+        "reveal": "silent",
+        "panel": "shared"
+      }
+    },
+    {
       "label": "publish:linux-x64",
       "type": "process",
       "command": "dotnet",

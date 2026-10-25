@@ -3,9 +3,9 @@
 @inject VmLauncherState State
 
 <PageTitle>Run an image | Everboot</PageTitle>
-<header class="topbar"><div class="top-brand">EVERBOOT / LOCAL VM</div><div class="top-status"><span><i class="status-dot online"></i>LAUNCHER READY</span></div></header>
+<header class="topbar"><div class="top-brand">EVERBOOT / LOCAL VM</div></header>
 <main class="vm-main">
-    <header class="page-head"><div class="page-head-copy"><div class="eyebrow">Local virtual machine workspace</div><h1>Run an image</h1><p>Your image stays on the server. A virtual PC reads it as needed, including after the operating system starts.</p></div></header>
+    <header class="page-head"><div class="page-head-copy"><h1>Run an image</h1><p>The virtual machine reads the image from the server.</p></div></header>
     @if (State.Notice is not null) { <p class="notice @(State.NoticeIsError ? "error" : "")" role="status">@State.Notice</p> }
     <div class="vm-toolbar"><button class="button secondary" @onclick="Refresh">Refresh library and status</button><span>@State.Active running</span></div>
     <div class="vm-grid">
@@ -17,7 +17,6 @@
             </article>
         }
     </div>
-    <footer class="page-footer"><p>Virtual disks are saved locally. Original images stay unchanged. Guest networking is off; no physical disks or host folders are attached.</p><small>Close the VM normally to save your work. Very old installers may require a boot floppy. QEMU must be installed on this computer.</small></footer>
 </main>
 
 @code {

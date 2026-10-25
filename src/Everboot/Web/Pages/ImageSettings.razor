@@ -5,12 +5,13 @@
 
 <PageTitle>@(entry is null ? "Image unavailable" : $"{entry.DisplayName} | Everboot")</PageTitle>
 @if (entry is null) {
-    <header class="page-head"><div class="page-head-copy"><div class="eyebrow">Image configuration</div><h1>Image unavailable</h1><p>The requested image is no longer in the catalog.</p></div></header>
+    <header class="page-head"><div class="page-head-copy"><h1>Image unavailable</h1><p>The requested image is no longer in the catalog.</p></div></header>
 } else {
-    <header class="page-head"><div class="page-head-copy"><div class="eyebrow">Image configuration</div><h1>@entry.DisplayName</h1><p>Review automatic detection and tune the boot path for @entry.FileName.</p></div></header>
+    <a class="back-link" href="/">&lt;- Boot library</a>
+    <header class="page-head"><div class="page-head-copy"><h1>@entry.DisplayName</h1><p class="inline-file">@entry.FileName</p></div></header>
     @if (notice is not null) { <p class="notice @(failed ? "error" : "")" role="status">@notice</p> }
     <div class="settings-layout">
-        <section class="window"><div class="window-bar"><span class="window-title">Detection and effective settings</span><span class="window-meta">@(entry.Override is null ? "AUTOMATIC" : "OVERRIDDEN")</span></div><div class="window-body">
+        <section class="window"><div class="window-bar"><span class="window-title">Detection</span><span class="window-meta">@(entry.Override is null ? "Automatic" : "Overridden")</span></div><div class="window-body">
             <table class="settings-table"><thead><tr><th>Property</th><th>Detected</th><th>Effective</th></tr></thead><tbody>
                 <tr><th>Profile</th><td>@(entry.DetectedMetadata.Profile?.DisplayName ?? "None")</td><td>@(entry.Metadata.Profile?.DisplayName ?? "None")</td></tr>
                 <tr><th>Windows generation</th><td>@entry.DetectedMetadata.WindowsEra</td><td>@entry.Metadata.WindowsEra</td></tr>
@@ -21,7 +22,7 @@
             </tbody></table>
             <p><strong>Detection criteria:</strong> @DetectionCriteria(entry.Metadata.Profile)</p><p><strong>Current boot path:</strong> <span class="badge">@Generator.BootSummary(entry)</span></p>
         </div></section>
-        <section class="window"><div class="window-bar"><span class="window-title">Boot configuration</span><span class="window-meta">PERSISTED POLICY</span></div><div class="window-body">
+        <section class="window"><div class="window-bar"><span class="window-title">Boot configuration</span></div><div class="window-body">
             <p class="form-help">Override incorrect detection or select a proven method for this image. Reset returns every field to automatic detection.</p>
             <label>Display name<input @bind="displayName" maxlength="100" /></label>
             <label>Detection profile<select @bind="profile"><option value="detected">Use automatic detection</option><option value="none">Generic image</option>@foreach (var item in DistroProfiles.All) { <option value="@item.Id">@item.DisplayName</option> }</select></label>
@@ -32,7 +33,6 @@
             <div class="form-actions"><button @onclick="Save">Save configuration</button><button class="secondary" @onclick="Reset">Reset to detection</button></div>
         </div></section>
     </div>
-    <footer class="page-footer">Everboot serves the original image without modifying it. Changes here affect generated boot instructions.</footer>
 }
 
 @code {

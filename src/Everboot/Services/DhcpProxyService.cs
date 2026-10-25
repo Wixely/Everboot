@@ -234,6 +234,23 @@ internal sealed class DhcpProxyService : BackgroundService
             return _dhcp.ServerAddress;
         }
 
+        // Ask Windows which address it would use for the default IPv4 route.
+        // UDP Connect selects a route without sending a packet and avoids an
+        // unrelated VPN or virtual adapter in the common case.
+        try
+        {
+            using var route = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+            route.Connect(new IPEndPoint(IPAddress.Parse("192.0.2.1"), 9));
+            if (route.LocalEndPoint is IPEndPoint endpoint && !IPAddress.IsLoopback(endpoint.Address))
+            {
+                return endpoint.Address.ToString();
+            }
+        }
+        catch (SocketException)
+        {
+            // Fall through to adapter enumeration for disconnected networks.
+        }
+
         foreach (var iface in NetworkInterface.GetAllNetworkInterfaces())
         {
             if (iface.OperationalStatus != OperationalStatus.Up)

@@ -2,11 +2,11 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "Everboot: Web UI (localhost)",
+      "name": "Everboot: LAN PXE hardware test",
       "type": "coreclr",
       "request": "launch",
-      "preLaunchTask": "build",
-      "program": "${workspaceFolder}/src/Everboot/bin/Debug/net10.0/Everboot.dll",
+      "preLaunchTask": "publish:lan-debug",
+      "program": "${workspaceFolder}/artifacts/streaming-win-x64/Everboot.exe",
       "args": [],
       "cwd": "${workspaceFolder}",
       "console": "internalConsole",
@@ -14,16 +14,32 @@
       "checkForDevCert": false,
       "serverReadyAction": {
         "action": "openExternally",
-        "pattern": "Now listening on: (http://localhost:[0-9]+)",
-        "uriFormat": "%s"
+        "pattern": "Now listening on: http://0.0.0.0:8081",
+        "uriFormat": "http://localhost:8081"
       },
       "env": {
-        "DOTNET_ENVIRONMENT": "Development",
+        "DOTNET_ENVIRONMENT": "Production",
         "EVERBOOT_LOG_DIR": "${workspaceFolder}/logs",
         "Everboot__DataDirectory": "${workspaceFolder}/data",
-        "Everboot__Http__BindAddress": "localhost",
-        "Everboot__Http__Port": "8080",
-        "Everboot__Dhcp__Enabled": "false"
+        "Everboot__IsoDirectory": "${workspaceFolder}/isos",
+        "Everboot__Http__BindAddress": "0.0.0.0",
+        "Everboot__Http__Port": "8081",
+        "Everboot__Dhcp__Enabled": "true",
+        "Everboot__Dhcp__Port": "67",
+        "Everboot__Dhcp__BindAddress": "0.0.0.0",
+        "Everboot__Dhcp__UnicastReplyToSource": "false",
+        "Everboot__Tftp__Port": "69",
+        "Everboot__Tftp__BindAddress": "0.0.0.0",
+        "Everboot__Nfs__Enabled": "true",
+        "Everboot__Nfs__BindAddress": "0.0.0.0",
+        "Everboot__Nfs__Port": "2049",
+        "Everboot__Nfs__MountPort": "20048",
+        "Everboot__Nfs__PortmapperPort": "111",
+        "Everboot__Iscsi__Enabled": "true",
+        "Everboot__Iscsi__BindAddress": "0.0.0.0",
+        "Everboot__Iscsi__Port": "3261",
+        "Everboot__Smb__Enabled": "true",
+        "Everboot__Smb__Port": "445"
       }
     },
     {
@@ -73,7 +89,8 @@
       "env": {
         "DOTNET_ENVIRONMENT": "Development",
         "EVERBOOT_LOG_DIR": "${workspaceFolder}/logs",
-        "Everboot__DataDirectory": "${workspaceFolder}/data"
+        "Everboot__DataDirectory": "${workspaceFolder}/data",
+        "Everboot__IsoDirectory": "${workspaceFolder}/isos"
       }
     },
     {

@@ -5,7 +5,36 @@
       "workingDirectory": "$(ProjectDir)",
       "environmentVariables": {
         "EVERBOOT_LOG_DIR": "$(SolutionDir)logs",
-        "Everboot__DataDirectory": "$(SolutionDir)data"
+        "Everboot__DataDirectory": "$(SolutionDir)data",
+        "Everboot__IsoDirectory": "$(SolutionDir)isos"
+      }
+    },
+    "Everboot-Lan": {
+      "commandName": "Project",
+      "workingDirectory": "$(ProjectDir)",
+      "environmentVariables": {
+        "DOTNET_ENVIRONMENT": "Production",
+        "EVERBOOT_LOG_DIR": "$(SolutionDir)logs",
+        "Everboot__DataDirectory": "$(SolutionDir)data",
+        "Everboot__IsoDirectory": "$(SolutionDir)isos",
+        "Everboot__Http__BindAddress": "0.0.0.0",
+        "Everboot__Http__Port": "8081",
+        "Everboot__Dhcp__Enabled": "true",
+        "Everboot__Dhcp__Port": "67",
+        "Everboot__Dhcp__BindAddress": "0.0.0.0",
+        "Everboot__Dhcp__UnicastReplyToSource": "false",
+        "Everboot__Tftp__Port": "69",
+        "Everboot__Tftp__BindAddress": "0.0.0.0",
+        "Everboot__Nfs__Enabled": "true",
+        "Everboot__Nfs__BindAddress": "0.0.0.0",
+        "Everboot__Nfs__Port": "2049",
+        "Everboot__Nfs__MountPort": "20048",
+        "Everboot__Nfs__PortmapperPort": "111",
+        "Everboot__Iscsi__Enabled": "true",
+        "Everboot__Iscsi__BindAddress": "0.0.0.0",
+        "Everboot__Iscsi__Port": "3261",
+        "Everboot__Smb__Enabled": "true",
+        "Everboot__Smb__Port": "445"
       }
     }
   }

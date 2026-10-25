@@ -3,9 +3,9 @@
 @inject BootConfigGenerator Generator
 
 <PageTitle>Diagnostics | Everboot</PageTitle>
-<header class="page-head"><div class="page-head-copy"><div class="eyebrow">Detection workspace</div><h1>Image diagnostics</h1><p>Inspect the filesystem evidence Everboot used to classify every image and choose its boot recipes.</p></div></header>
+<header class="page-head"><div class="page-head-copy"><h1>Image diagnostics</h1></div></header>
 <section class="window">
-    <div class="window-bar"><span class="window-title">Catalog inspection</span><span class="window-meta">@Entries.Count IMAGES</span></div>
+    <div class="window-bar"><span class="window-title">Detection results</span><span class="window-meta">@Entries.Count</span></div>
     <div class="window-body">
         @if (Entries.Count == 0) { <div class="empty-state"><strong>No images to inspect</strong><p>Add media to the boot library and refresh the catalog.</p></div> }
         else {
@@ -21,7 +21,6 @@
         }
     </div>
 </section>
-<footer class="page-footer">Detection reports compatibility evidence. Validate important deployments on representative hardware or through the PXE QEMU probe.</footer>
 
 @code {
     private IReadOnlyList<IsoEntry> Entries => Catalog.Entries;
