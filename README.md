@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/everboot-icon.svg" width="144" height="144" alt="Everboot logo">
+  <img src="docs/assets/everboot-logo-retro.png" width="192" height="192" alt="Everboot logo: a chrome EB monogram on a retro floppy disk">
 </p>
 
 # Everboot
