@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title description">
+  <title id="title">Everboot icon</title>
+  <desc id="description">A geometric EB monogram in the Everboot interface colours.</desc>
+
+  <rect x="24" y="24" width="464" height="464" rx="84" fill="#191c19"/>
+  <rect x="25.5" y="25.5" width="461" height="461" rx="82.5" fill="none" stroke="#55584e" stroke-width="3"/>
+
+  <path d="M82 102H430" stroke="#dda11d" stroke-width="28" stroke-linecap="square"/>
+  <rect x="82" y="82" width="40" height="40" fill="#f2bd43"/>
+  <rect x="136" y="82" width="40" height="40" fill="#b1ba2b"/>
+  <rect x="190" y="82" width="40" height="40" fill="#70b4ad"/>
+
+  <path d="M92 166V394M92 166H238M92 280H214M92 394H238" fill="none" stroke="#f2bd43" stroke-width="52" stroke-linejoin="miter"/>
+
+  <path d="M282 166V394M282 166H354C394 166 420 188 420 222C420 256 394 280 354 280H282M354 280C398 280 426 302 426 337C426 372 398 394 354 394H282" fill="none" stroke="#eee4c5" stroke-width="52" stroke-linejoin="miter"/>
+
+  <rect x="394" y="420" width="32" height="14" fill="#70b4ad"/>
+</svg>

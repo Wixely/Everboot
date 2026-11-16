@@ -1,8 +1,16 @@
+<p align="center">
+  <img src="docs/assets/everboot-icon.svg" width="144" height="144" alt="Everboot logo">
+</p>
+
 # Everboot
 
-> All-in-one PXE boot server: DHCP proxy, TFTP, HTTP, and per-client boot menu generation in a single binary or container.
+> Run a complete PXE boot service, image library, and management workspace from one .NET process or container.
 
-Everboot bundles the moving pieces of a typical PXE pipeline into one process so you can stand up netboot from bare metal with a single deploy. Drop ISOs into a folder, point your switch's DHCP at Everboot, and machines on the network get a menu of bootable images.
+Everboot brings ProxyDHCP, TFTP, HTTP, iSCSI, SMB2, and experimental NFSv3
+streaming together behind a server-side Blazor workspace. Drop ISO or IMG files
+into the library, supply the iPXE boot loaders, and clients on the same network
+receive a generated boot menu. Image overrides and device policies let you tune
+the menu without modifying the original media.
 
 ## What it runs
 
@@ -15,6 +23,7 @@ Everboot bundles the moving pieces of a typical PXE pipeline into one process so
 | **SMB2 target** | Read-only SMB 2.0.2 server on TCP/445. Each ISO is exposed as a share named by its slug, backed by DiscUtils streaming the ISO contents on demand — never extracted to disk. WinPE automatically connects and launches Setup from this share. Windows 7 SP1 x64 completed a PXE-started installation to desktop in QEMU with 1 GiB RAM. Public guest-only access with NTLM/SPNEGO wire compatibility (no password verification). |
 | **Boot config generator** | Renders the iPXE menu from the contents of `data/isos/` (both `*.iso` and `*.img`). |
 | **NFSv3 (experimental)** | Read-only ISO file trees over TCP, with embedded MOUNTv3 and portmapper v2. Compatible Linux live environments mount these trees after kernel handoff instead of downloading the whole payload into RAM. |
+| **Management workspace** | A server-side Blazor interface for the image library, detection results, per-image boot settings, device policies, policy previews, and NFS read counters. |
 
 ## Image settings and device rules
 
@@ -63,11 +72,9 @@ methods. Custom kernel/initrd paths must exist inside the image; network and
 filesystem drivers still need to be included by the OS. This feature does not
 make every ISO compatible with PXE or guarantee streaming.
 
-## Experimental streaming boot
+## Streaming boot (experimental)
 
-Branch: `experimental/streaming-boot`. Reviewed: **2026-10-25**.
-
-This branch embeds a read-only **NFSv3 server in the same C# process**. Each
+Everboot embeds a read-only **NFSv3 server in the same C# process**. Each
 ISO becomes an export at `/<image-slug>`, backed directly by DiscUtils. There is
 no ISO extraction, separate NFS daemon, initramfs modification, or new native
 dependency. The client loads its kernel and initrd, then mounts the ISO's full
@@ -332,11 +339,10 @@ to a reachable IPv4 address when HTTP uses a hostname or reverse proxy.
 These sections belong inside `Everboot`. Environment equivalents include
 `Everboot__Nfs__Enabled=false` to restore download/SAN defaults and
 `Everboot__Menu__OneClickBoot=false` to restore the per-image method submenu.
-Build this branch locally for Docker (`docker build -t everboot:streaming .`);
-the published `latest` image does not contain this experiment. Host networking
-remains the supported deployment model; Docker packaging has not been run in
-this experiment. Existing normal .NET single-file publishing is retained;
-NativeAOT compatibility has not been established for the existing dependencies.
+Build the current source locally for Docker (`docker build -t everboot:dev .`).
+Host networking remains the supported deployment model. Normal .NET single-file
+publishing is retained; NativeAOT compatibility has not been established for the
+current dependencies.
 
 ### Verification and next acceptance test
 
@@ -379,8 +385,9 @@ QEMU/FreeDOS boot validation is documented above.
 ISO, in a disposable VM with less RAM than the ISO size but enough for the distro's
 working set. Record ISO checksum, architecture, BIOS/UEFI mode, RAM, time to desktop,
 NFS bytes read, and continued reads after login. Test network reconnection, concurrent
-clients, and Secure Boot separately. Review before promotion to `main`; no universal
-ISO compatibility is claimed. Protocol basis: [NFSv3](https://www.rfc-editor.org/rfc/rfc1813),
+clients, and Secure Boot separately. Complete those checks before promoting the
+streaming path from experimental status; no universal ISO compatibility is claimed.
+Protocol basis: [NFSv3](https://www.rfc-editor.org/rfc/rfc1813),
 [Casper](https://manpages.ubuntu.com/manpages/jammy/man7/casper.7.html), and
 [Debian live-boot](https://manpages.debian.org/trixie/live-boot-doc/live-boot.7.en.html).
 
@@ -390,8 +397,8 @@ Everboot serves everything out of a single data directory (default `./data` next
 
 ```
 data/
-├── isos/    drop *.iso files here - one per menu entry
-└── tftp/    iPXE/syslinux bootstrap binaries
+|-- isos/    drop *.iso and *.img files here
+`-- tftp/    iPXE and optional helper binaries
 ```
 
 Add or remove an ISO and the menu updates within ~500 ms - no restart needed. The file name (minus `.iso`) becomes the menu label; rename it to whatever you want users to see.
@@ -409,12 +416,14 @@ Add or remove an ISO and the menu updates within ~500 ms - no restart needed. Th
 
 ## Quick start
 
-```bash
+```powershell
 dotnet run --project src/Everboot
 ```
 
 Then drop an ISO into `data/isos/` and visit `http://localhost:8080/` for the
-Blazor management workspace. The PXE menu is available at
+management workspace. Use **Boot library** to inspect and configure images,
+**Device policies** to filter or force a boot choice by MAC/IP, and
+**Diagnostics** to review detection results. The generated PXE menu is available at
 `http://localhost:8080/boot.ipxe`; files inside an ISO are reachable at
 `http://localhost:8080/iso/<slug>/<path-inside-iso>` (used for the Windows boot
 chain).
@@ -462,6 +471,14 @@ For a real deployment (Portainer, Compose, etc.) use the sample stack at [exampl
     "DataDirectory": "./data",
     "Http": { "Port": 8080, "BindAddress": "+" },
     "Tftp": { "Port": 69, "BindAddress": "0.0.0.0", "MaxBlockSize": 1468 },
+    "Smb": { "Enabled": true, "Port": 445, "BindAddress": "0.0.0.0" },
+    "Nfs": {
+      "Enabled": true,
+      "BindAddress": "0.0.0.0",
+      "Port": 2049,
+      "MountPort": 20048,
+      "PortmapperPort": 111
+    },
     "Iscsi": {
       "Enabled": true,
       "Port": 3260,
@@ -479,7 +496,11 @@ For a real deployment (Portainer, Compose, etc.) use the sample stack at [exampl
         "UefiArm64": "snponly-arm64.efi"
       }
     },
-    "Menu": { "Title": "Everboot - select an image", "TimeoutSeconds": 60 }
+    "Menu": {
+      "OneClickBoot": true,
+      "Title": "Everboot - select an image",
+      "TimeoutSeconds": 60
+    }
   }
 }
 ```
