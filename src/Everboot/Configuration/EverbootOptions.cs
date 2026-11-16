@@ -10,6 +10,13 @@ internal sealed class EverbootOptions
     public string DataDirectory { get; set; } = "./data";
 
     /// <summary>
+    /// Optional image-library directory. When unset, images are read from
+    /// <c>&lt;DataDirectory&gt;/isos</c>. This lets local development or a NAS
+    /// mount supply images without moving policy and TFTP state.
+    /// </summary>
+    public string? IsoDirectory { get; set; }
+
+    /// <summary>
     /// Periodic catalog rescan interval in seconds, in addition to the
     /// FileSystemWatcher-driven rescans. Catches changes when the watcher
     /// misses events (bind-mounts, network FS, Docker volumes). Set to 0
@@ -29,17 +36,20 @@ internal sealed class EverbootOptions
 
     public SmbOptions Smb { get; set; } = new();
 
+    public NfsOptions Nfs { get; set; } = new();
+
     public BootMenuOptions Menu { get; set; } = new();
 }
 
 internal sealed class HttpOptions
 {
+    public string? ManagementKey { get; set; }
     [Range(1, 65535)]
     public int Port { get; set; } = 8080;
 
     /// <summary>
-    /// HttpListener bind host. "+" listens on every interface (needs admin/URLACL on Windows),
-    /// "localhost" is the safe dev default, or set a specific IP.
+    /// Kestrel bind host. "+" listens on every interface, "localhost" is the
+    /// safe development default, or set a specific IP.
     /// </summary>
     public string BindAddress { get; set; } = "+";
 }
@@ -171,6 +181,9 @@ internal sealed class SmbOptions
 
 internal sealed class BootMenuOptions
 {
+    /// <summary>Selecting an image immediately starts its recommended method.</summary>
+    public bool OneClickBoot { get; set; } = true;
+
     public string Title { get; set; } = "Everboot - select an image";
 
     [Range(0, 3600)]
@@ -202,4 +215,21 @@ internal sealed class BootMenuOptions
     /// stock binaries. Leave null to skip.
     /// </summary>
     public string? BackgroundImage { get; set; }
+}
+
+internal sealed class NfsOptions
+{
+    public bool Enabled { get; set; } = true;
+    public string BindAddress { get; set; } = "0.0.0.0";
+    public int Port { get; set; } = 2049;
+    public int MountPort { get; set; } = 20048;
+    public int PortmapperPort { get; set; } = 111;
+    public int MaxConnections { get; set; } = 32;
+
+    public bool IsValid() => !Enabled ||
+        (System.Net.IPAddress.TryParse(BindAddress, out _) &&
+         Port is > 0 and <= 65535 && MountPort is > 0 and <= 65535 &&
+         PortmapperPort is > 0 and <= 65535 &&
+         new[] { Port, MountPort, PortmapperPort }.Distinct().Count() == 3 &&
+         MaxConnections is >= 1 and <= 256);
 }

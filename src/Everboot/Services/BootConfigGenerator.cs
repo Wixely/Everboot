@@ -20,8 +20,7 @@ namespace Everboot.Services;
 /// which returns to the method submenu of the ISO the user was trying to
 /// boot - not the main menu - so they can try a different method right away.
 ///
-/// Windows 9x and "not-for-PXE" images (Ventoy) skip the submenu and just
-/// show a notice + return to the main menu.
+/// "Not-for-PXE" images (Ventoy) show a notice and return to the main menu.
 /// </summary>
 internal sealed class BootConfigGenerator
 {
@@ -34,9 +33,9 @@ internal sealed class BootConfigGenerator
         _options = options.Value;
     }
 
-    public string GenerateIpxeMenu(string serverAuthority)
+    public string GenerateIpxeMenu(string serverAuthority, BootDecision? decision = null)
     {
-        var entries = _catalog.Entries;
+        var entries = decision?.Images ?? _catalog.Entries;
         var sb = new StringBuilder(8192);
 
         sb.AppendLine("#!ipxe");
@@ -44,23 +43,30 @@ internal sealed class BootConfigGenerator
         sb.AppendLine();
 
         EmitConsoleSetup(sb, serverAuthority);
-        EmitMainMenu(sb, entries);
-        EmitCommonLabels(sb);
+        var forced = decision?.Rule?.Mode == "force";
+        if (forced)
+        {
+            if (decision!.ForcedImage is { } assigned && CanBoot(assigned))
+                sb.AppendLine($"goto {assigned.Slug}-auto");
+            sb.AppendLine(":start\n:cancel\n:methodfail\n:bootfail\necho Assigned boot failed or is unavailable. Contact your administrator.\n:policy-stop\nsleep 60\ngoto policy-stop");
+        }
+        else
+        {
+            EmitMainMenu(sb, entries);
+            EmitAdvancedMenu(sb, entries);
+            EmitCommonLabels(sb);
+        }
 
         foreach (var entry in entries)
         {
             sb.AppendLine();
-            if (entry.Metadata.WindowsEra == WindowsBootEra.NinexClass)
-            {
-                EmitWin9xEntry(sb, entry);
-            }
-            else if (entry.Metadata.Profile?.Family == DistroFamily.NotForPxe)
+            if (entry.Metadata.Profile?.Family == DistroFamily.NotForPxe)
             {
                 EmitNotForPxeEntry(sb, entry);
             }
             else
             {
-                EmitMethodSubmenu(sb, entry);
+                if (!forced) EmitMethodSubmenu(sb, entry);
                 EmitMethodBodies(sb, serverAuthority, entry);
             }
         }
@@ -136,16 +142,18 @@ internal sealed class BootConfigGenerator
                 // Numeric hotkeys for the first nine entries (1-9). Beyond
                 // that, items still appear and are reachable via arrow keys.
                 var keyArg = i < 9 ? $"--key {i + 1} " : string.Empty;
-                sb.AppendLine($"item {keyArg}{entry.Slug} {entry.DisplayName}  [{FormatSize(entry.SizeBytes)}]{LabelTag(entry)}");
+                var target = _options.Menu.OneClickBoot && CanBoot(entry) ? entry.Slug + "-auto" : entry.Slug;
+                sb.AppendLine($"item {keyArg}{target} {Sanitize(entry.DisplayName)}  [{FormatSize(entry.SizeBytes)}] {BootSummary(entry)}{LabelTag(entry)}");
             }
         }
 
         sb.AppendLine("item --gap -- ------------ Tools -----------------");
+        sb.AppendLine("item --key a advanced Advanced boot options");
         sb.AppendLine("item --key s shell  iPXE shell");
         sb.AppendLine("item --key r reboot Reboot");
         sb.AppendLine("item --key x exit   Exit iPXE (continue local boot)");
 
-        var defaultItem = entries.Count > 0 ? entries[0].Slug : "exit";
+        var defaultItem = entries.Count > 0 ? entries[0].Slug + (_options.Menu.OneClickBoot && CanBoot(entries[0]) ? "-auto" : "") : "exit";
         var timeoutMs = Math.Max(0, _options.Menu.TimeoutSeconds) * 1000;
         sb.AppendLine($"choose --default {defaultItem} --timeout {timeoutMs} target && goto ${{target}} || goto cancel");
     }
@@ -186,6 +194,62 @@ internal sealed class BootConfigGenerator
     // Per-ISO method submenu - the new "give them every option" UI.
     // -----------------------------------------------------------------
 
+    private static bool CanBoot(IsoEntry entry) => entry.Metadata.Profile?.Family != DistroFamily.NotForPxe;
+
+    internal string? OverrideProblem(IsoEntry entry)
+    {
+        if (entry.Override is not { } setting) return null;
+        if (setting.Kernel is not null && GetApplicableRecipes(entry).Count == 0)
+            return "Custom boot is unavailable. Check kernel/initrd paths, live filesystem path and required services.";
+        return IsMethodAvailable(entry, setting.Method) ? null : "The selected boot method is unavailable for this image or server configuration.";
+    }
+
+    private bool IsMethodAvailable(IsoEntry entry, string method) => method is "auto" or "sanhttp" or "memdisk" ||
+        method == "saniscsi" && _options.Iscsi.Enabled || method == "wimboot" && entry.Metadata.IsModernWindows ||
+        GetApplicableRecipes(entry).Any(r => "direct-" + r.Id == method);
+
+    public string BootSummary(IsoEntry entry)
+    {
+        if (OverrideProblem(entry) is not null) return "Override needs attention";
+        if (entry.Override is { Method: not "auto" } setting) return "Override: " + setting.Method;
+        if (!CanBoot(entry)) return "Not supported";
+        if (HasDosSource(entry)) return "Experimental DOS PXE source (requires local FAT disk)";
+        if (entry.Metadata.WindowsEra == WindowsBootEra.NinexClass)
+            return "Legacy BIOS attempt / DOS CD driver required";
+        if (entry.Metadata.WindowsEra == WindowsBootEra.XpClass)
+            return "Legacy BIOS attempt / OS storage driver required";
+        if (entry.Metadata.IsModernWindows)
+        {
+            if (!File.Exists(Path.Combine(_catalog.TftpDirectory, "wimboot"))) return "Needs wimboot loader";
+            return _options.Smb.Enabled && _options.Smb.Port == 445
+                ? "WinPE in RAM / SMB source available" : "WinPE in RAM / SMB source disabled or on a nonstandard port";
+        }
+        var recipe = GetApplicableRecipes(entry).FirstOrDefault();
+        if (recipe?.RequiresNfs == true) return "Streaming candidate (experimental NFS)";
+        if (recipe?.KernelArgs.Contains("fetch=", StringComparison.Ordinal) == true ||
+            recipe?.KernelArgs.Contains("url=", StringComparison.Ordinal) == true ||
+            recipe?.KernelArgs.Contains("root=live:http", StringComparison.Ordinal) == true || entry.IsLikelyFloppy)
+            return "Downloads payload into RAM";
+        return "Compatibility boot / streaming not established";
+    }
+
+    private static void EmitAdvancedMenu(StringBuilder sb, IReadOnlyList<IsoEntry> entries)
+    {
+        sb.AppendLine(":advanced");
+        sb.AppendLine("menu Advanced boot options - select an image");
+        foreach (var entry in entries) sb.AppendLine($"item {entry.Slug} {Sanitize(entry.DisplayName)}");
+        sb.AppendLine("item --key b start Back to images");
+        sb.AppendLine("choose --default start advanced-target && goto ${advanced-target} || goto start");
+    }
+
+    private string NfsServer(string authority)
+    {
+        // PXE is IPv4 in this experiment. Avoid DNS dependence in the initramfs.
+        var host = _options.Dhcp.ServerAddress ?? new Uri("http://" + authority).Host;
+        return System.Net.IPAddress.TryParse(host, out var address) && address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork
+            ? address.ToString() : "${next-server}";
+    }
+
     private void EmitMethodSubmenu(StringBuilder sb, IsoEntry entry)
     {
         var slug = entry.Slug;
@@ -198,14 +262,20 @@ internal sealed class BootConfigGenerator
 
         if (entry.Metadata.WindowsEra == WindowsBootEra.XpClass)
         {
-            sb.AppendLine("echo NOTE: Windows XP-era PXE is unreliable on every method; expect to experiment.");
+            sb.AppendLine("echo NOTE: NT/2000/XP setup needs an OS network-storage driver after BIOS handoff.");
+        }
+        if (entry.Metadata.WindowsEra == WindowsBootEra.NinexClass)
+        {
+            sb.AppendLine("echo NOTE: Bootable DOS/9x media may start via BIOS. Continued CD access needs a compatible DOS driver.");
+            sb.AppendLine("echo Everboot SMB2 shares cannot be used by stock DOS/9x network clients.");
         }
         if (entry.Metadata.Profile?.Caveat is { } caveat)
         {
             sb.AppendLine($"echo NOTE: {Sanitize(caveat)}");
         }
 
-        sb.AppendLine($"menu {entry.DisplayName} - choose a boot method");
+        sb.AppendLine($"menu {Sanitize(entry.DisplayName)} - advanced boot options");
+        sb.AppendLine($"item --gap -- {BootSummary(entry)}");
         sb.AppendLine("item --gap -- ------------ Boot methods ------------");
         sb.AppendLine($"item --key a {slug}-auto      Auto (recommended)");
 
@@ -223,18 +293,18 @@ internal sealed class BootConfigGenerator
             sb.AppendLine($"item --key w {slug}-wimboot   wimboot (load Windows PE)");
         }
 
-        sb.AppendLine($"item --key h {slug}-sanhttp   sanboot via HTTP (virtual CD)");
+        sb.AppendLine($"item --key h {slug}-sanhttp   sanboot via HTTP (firmware-backed media)");
         if (iscsiOn)
         {
-            sb.AppendLine($"item --key i {slug}-saniscsi  sanboot via iSCSI (more reliable for Windows-class boot)");
+            sb.AppendLine($"item --key i {slug}-saniscsi  sanboot via iSCSI (requires OS handoff support)");
         }
-        sb.AppendLine($"item --key m {slug}-memdisk   memdisk (load entire image into RAM)");
+        sb.AppendLine($"item --key m {slug}-memdisk   memdisk (BIOS only, entire image in RAM)");
         sb.AppendLine($"item --key s {slug}-shell     Drop to iPXE shell (variables preset)");
 
         sb.AppendLine("item --gap -- ------------ Navigation ------------");
         sb.AppendLine("item --key b start            <-- Back to main menu");
 
-        var methodTimeoutMs = Math.Max(0, _options.Menu.MethodMenuTimeoutSeconds) * 1000;
+        var methodTimeoutMs = _options.Menu.OneClickBoot ? 0 : Math.Max(0, _options.Menu.MethodMenuTimeoutSeconds) * 1000;
         sb.AppendLine($"choose --default {slug}-auto --timeout {methodTimeoutMs} method && goto ${{method}} || goto start");
     }
 
@@ -243,7 +313,7 @@ internal sealed class BootConfigGenerator
     /// this entry - i.e. any that don't reference <c>{squashfs}</c>, or that
     /// do but a squashfs path was discovered at scan time.
     /// </summary>
-    private static IReadOnlyList<DirectBootRecipe> GetApplicableRecipes(IsoEntry entry)
+    internal IReadOnlyList<DirectBootRecipe> GetApplicableRecipes(IsoEntry entry)
     {
         if (entry.Metadata.IsModernWindows)
         {
@@ -256,8 +326,9 @@ internal sealed class BootConfigGenerator
         }
         var hasSquashfs = !string.IsNullOrEmpty(entry.Metadata.Squashfs);
         var result = new List<DirectBootRecipe>();
-        foreach (var recipe in profile.DirectBoots)
+        foreach (var recipe in entry.Metadata.AvailableRecipes ?? Array.Empty<DirectBootRecipe>())
         {
+            if (recipe.RequiresNfs && (!_options.Nfs.Enabled || !hasSquashfs)) continue;
             if (recipe.KernelArgs.Contains("{squashfs}", StringComparison.Ordinal) && !hasSquashfs)
             {
                 continue;
@@ -271,6 +342,9 @@ internal sealed class BootConfigGenerator
     // Method bodies - the actual boot logic for each chosen method.
     // -----------------------------------------------------------------
 
+    private bool HasDosSource(IsoEntry entry) => entry.Metadata.WindowsEra == WindowsBootEra.NinexClass &&
+        File.Exists(Path.Combine(_catalog.TftpDirectory, entry.FileName + ".dos.img"));
+
     private void EmitMethodBodies(StringBuilder sb, string authority, IsoEntry entry)
     {
         var slug = entry.Slug;
@@ -282,7 +356,27 @@ internal sealed class BootConfigGenerator
         sb.AppendLine();
         sb.AppendLine($":{slug}-auto");
         sb.AppendLine($"set last-method-menu {slug}");
-        if (isWin)
+        if (entry.Override is { Method: not "auto" } setting)
+        {
+            var valid = IsMethodAvailable(entry, setting.Method);
+            sb.AppendLine(valid ? $"goto {slug}-{setting.Method}" : "goto methodfail");
+        }
+        else if (entry.Override?.Kernel is not null && recipes.Count == 0)
+        {
+            sb.AppendLine("echo Custom kernel boot is unavailable. Check ISO paths and required services.");
+            sb.AppendLine("goto methodfail");
+        }
+        else if (HasDosSource(entry))
+        {
+            sb.AppendLine("iseq ${platform} pcbios || goto methodfail");
+            sb.AppendLine("echo Experimental DOS network-source test; no disk formatting.");
+            sb.AppendLine($"sanhook --no-describe --drive 0x81 http://{authority}/dos-source/{slug} || goto methodfail");
+            sb.AppendLine($"sanboot --no-describe --drive 0x00 http://{authority}/files/{Uri.EscapeDataString(entry.FileName + ".dos.img")} || goto {slug}-dos-cleanup");
+            sb.AppendLine($":{slug}-dos-cleanup");
+            sb.AppendLine("sanunhook --drive 0x81 || echo Source already detached");
+            sb.AppendLine("goto methodfail");
+        }
+        else if (isWin)
         {
             sb.AppendLine($"echo Auto: wimboot (modern Windows detected)");
             sb.AppendLine($"goto {slug}-wimboot");
@@ -299,8 +393,9 @@ internal sealed class BootConfigGenerator
         }
         else
         {
-            sb.AppendLine($"echo Auto: sanboot via HTTP");
-            sb.AppendLine($"goto {slug}-sanhttp");
+            var san = _options.Iscsi.Enabled && _options.Iscsi.UseForSanboot ? "saniscsi" : "sanhttp";
+            sb.AppendLine("echo Auto: compatibility boot - OS network-storage support is required.");
+            sb.AppendLine($"goto {slug}-{san}");
         }
 
         // One method body per direct-boot recipe.
@@ -323,30 +418,47 @@ internal sealed class BootConfigGenerator
         // sanboot via HTTP - always available
         sb.AppendLine();
         sb.AppendLine($":{slug}-sanhttp");
+        sb.AppendLine("imgfree");
         sb.AppendLine($"set last-method-menu {slug}");
+        EmitLegacyFirmwareGuard(sb, entry);
         sb.AppendLine($"echo sanboot via HTTP: {entry.FileName}");
         sb.AppendLine($"set iso-url http://{authority}/isos/{Uri.EscapeDataString(entry.FileName)}");
-        sb.AppendLine("sanboot --no-describe ${iso-url} || goto methodfail");
+        var drive = Path.GetExtension(entry.FileName).Equals(".iso", StringComparison.OrdinalIgnoreCase) ? "0xe0" : "0x80";
+        sb.AppendLine($"sanboot --drive {drive} --no-describe ${{iso-url}} || goto methodfail");
+        sb.AppendLine("goto start");
 
         if (iscsiOn)
         {
             sb.AppendLine();
             sb.AppendLine($":{slug}-saniscsi");
             sb.AppendLine($"set last-method-menu {slug}");
-            var host = authority.Split(':')[0];
+            EmitLegacyFirmwareGuard(sb, entry);
+            var host = new Uri("http://" + authority).Host;
             var iqn = $"{_options.Iscsi.IqnBase}:iso-{slug}";
             sb.AppendLine($"echo sanboot via iSCSI: {iqn}");
-            sb.AppendLine($"sanboot --no-describe iscsi:{host}::::{iqn} || goto methodfail");
+            sb.AppendLine("imgfree");
+            sb.AppendLine($"sanboot --drive {drive} iscsi:{host}::{_options.Iscsi.Port}::{iqn} || goto methodfail");
+            sb.AppendLine("goto start");
         }
 
         // memdisk - always available
         sb.AppendLine();
         sb.AppendLine($":{slug}-memdisk");
+        sb.AppendLine("imgfree");
         sb.AppendLine($"set last-method-menu {slug}");
+        sb.AppendLine($"iseq ${{platform}} pcbios || goto {slug}-needs-bios");
         sb.AppendLine($"echo memdisk: loading {entry.FileName} ({FormatSize(entry.SizeBytes)}) into RAM");
-        sb.AppendLine($"kernel http://{authority}/files/memdisk iso raw || goto methodfail");
+        var media = Path.GetExtension(entry.FileName).Equals(".iso", StringComparison.OrdinalIgnoreCase)
+            ? "iso" : entry.IsLikelyFloppy ? "floppy" : "harddisk";
+        sb.AppendLine($"kernel http://{authority}/files/memdisk {media} raw || goto methodfail");
         sb.AppendLine($"initrd http://{authority}/isos/{Uri.EscapeDataString(entry.FileName)} || goto methodfail");
         sb.AppendLine("boot || goto methodfail");
+        sb.AppendLine("goto start");
+
+        sb.AppendLine($":{slug}-needs-bios");
+        sb.AppendLine("echo This method requires legacy BIOS. Reboot using BIOS/CSM network boot where available.");
+        sb.AppendLine("echo UEFI-only machines need a different image or a legacy virtual machine.");
+        sb.AppendLine("goto methodfail");
 
         // shell with helpful variables preset
         sb.AppendLine();
@@ -367,23 +479,30 @@ internal sealed class BootConfigGenerator
         sb.AppendLine($"goto {slug}");
     }
 
-    private static void EmitDirectKernelBody(StringBuilder sb, string authority, IsoEntry entry, DirectBootRecipe recipe)
+    private void EmitDirectKernelBody(StringBuilder sb, string authority, IsoEntry entry, DirectBootRecipe recipe)
     {
         var squashfs = entry.Metadata.Squashfs ?? string.Empty;
         var args = recipe.KernelArgs
+            .Replace("{nfs-server}", NfsServer(authority), StringComparison.Ordinal)
+            // klibc nfsmount in live initramfs accepts tcp, but not proto=,
+            // mountproto= or mountport=. It discovers MOUNT via portmapper/111.
+            .Replace("{nfs-options}", $"ro,nolock,vers=3,tcp,port={_options.Nfs.Port},rsize=65536", StringComparison.Ordinal)
             .Replace("{server}", authority, StringComparison.Ordinal)
             .Replace("{slug}", entry.Slug, StringComparison.Ordinal)
             .Replace("{file}", Uri.EscapeDataString(entry.FileName), StringComparison.Ordinal)
             .Replace("{squashfs}", EncodePath(squashfs), StringComparison.Ordinal);
 
         sb.AppendLine($"echo Direct kernel boot - recipe: {recipe.DisplayName}");
-        sb.AppendLine($"kernel http://{authority}/iso/{entry.Slug}/{EncodePath(recipe.KernelPath)} {args} || goto methodfail");
-        sb.AppendLine($"initrd http://{authority}/iso/{entry.Slug}/{EncodePath(recipe.InitrdPath)} || goto methodfail");
+        if (recipe.RequiresNfs) sb.AppendLine("echo Keep the network connected. Kernel and initrd load first. The live filesystem stays on the server.");
+        sb.AppendLine("imgfree");
+        sb.AppendLine($"kernel http://{authority}/iso/{entry.Slug}/{EncodePath(recipe.KernelPath)} initrd=initrd.img {args} || goto methodfail");
+        sb.AppendLine($"initrd --name initrd.img http://{authority}/iso/{entry.Slug}/{EncodePath(recipe.InitrdPath)} || goto methodfail");
         sb.AppendLine("boot || goto methodfail");
     }
 
-    private static void EmitWimbootChain(StringBuilder sb, string authority, string slug, WindowsBootFiles wf)
+    private void EmitWimbootChain(StringBuilder sb, string authority, string slug, WindowsBootFiles wf)
     {
+        sb.AppendLine("imgfree");
         if (wf.HasBiosChain && wf.HasEfiChain)
         {
             sb.AppendLine($"iseq $" + "{platform} efi && goto " + $"{slug}-wimboot-efi || goto {slug}-wimboot-bios");
@@ -408,11 +527,16 @@ internal sealed class BootConfigGenerator
         }
     }
 
-    private static void EmitBiosChain(StringBuilder sb, string authority, string slug, WindowsBootFiles wf)
+    private void EmitBiosChain(StringBuilder sb, string authority, string slug, WindowsBootFiles wf)
     {
         sb.AppendLine($"set base http://{authority}/iso/{slug}");
         sb.AppendLine($"set wimboot-url http://{authority}/files/wimboot");
         sb.AppendLine("kernel ${wimboot-url} || goto methodfail");
+        if (_options.Smb.Enabled && _options.Smb.Port == 445)
+        {
+            sb.AppendLine($"initrd --name winpeshl.ini http://{authority}/winpe/{slug}/winpeshl.ini winpeshl.ini || goto methodfail");
+            sb.AppendLine($"initrd --name everboot.cmd http://{authority}/winpe/{slug}/everboot.cmd everboot.cmd || goto methodfail");
+        }
         sb.AppendLine($"initrd --name bootmgr     ${{base}}/{EncodePath(wf.Bootmgr!)}     bootmgr");
         sb.AppendLine($"initrd --name BCD         ${{base}}/{EncodePath(wf.Bcd!)}         BCD");
         sb.AppendLine($"initrd --name boot.sdi    ${{base}}/{EncodePath(wf.BootSdi!)}    boot.sdi");
@@ -420,11 +544,16 @@ internal sealed class BootConfigGenerator
         sb.AppendLine("boot || goto methodfail");
     }
 
-    private static void EmitEfiChain(StringBuilder sb, string authority, string slug, WindowsBootFiles wf)
+    private void EmitEfiChain(StringBuilder sb, string authority, string slug, WindowsBootFiles wf)
     {
         sb.AppendLine($"set base http://{authority}/iso/{slug}");
         sb.AppendLine($"set wimboot-url http://{authority}/files/wimboot");
         sb.AppendLine("kernel ${wimboot-url} || goto methodfail");
+        if (_options.Smb.Enabled && _options.Smb.Port == 445)
+        {
+            sb.AppendLine($"initrd --name winpeshl.ini http://{authority}/winpe/{slug}/winpeshl.ini winpeshl.ini || goto methodfail");
+            sb.AppendLine($"initrd --name everboot.cmd http://{authority}/winpe/{slug}/everboot.cmd everboot.cmd || goto methodfail");
+        }
         sb.AppendLine($"initrd --name BCD         ${{base}}/{EncodePath(wf.BcdEfi!)}     BCD");
         if (wf.BootmgrEfi is not null)
         {
@@ -434,15 +563,10 @@ internal sealed class BootConfigGenerator
         sb.AppendLine("boot || goto methodfail");
     }
 
-    private static void EmitWin9xEntry(StringBuilder sb, IsoEntry entry)
+    private static void EmitLegacyFirmwareGuard(StringBuilder sb, IsoEntry entry)
     {
-        sb.AppendLine($":{entry.Slug}");
-        sb.AppendLine($"echo {entry.DisplayName}: Windows 9x install media cannot boot directly via PXE.");
-        sb.AppendLine("echo To install: PXE-boot FreeDOS via 'kernel memdisk' + a DOS floppy image,");
-        sb.AppendLine("echo then run setup.exe from a mounted network share.");
-        sb.AppendLine("echo Returning to menu in 8 seconds.");
-        sb.AppendLine("sleep 8");
-        sb.AppendLine("goto start");
+        if (entry.Metadata.WindowsEra is WindowsBootEra.NinexClass or WindowsBootEra.XpClass)
+            sb.AppendLine($"iseq ${{platform}} pcbios || goto {entry.Slug}-needs-bios");
     }
 
     private static void EmitNotForPxeEntry(StringBuilder sb, IsoEntry entry)
@@ -479,7 +603,7 @@ internal sealed class BootConfigGenerator
                 ? $"  ({mp.DisplayName} - Windows)"
                 : "  (Windows)",
             WindowsBootEra.XpClass => "  (Windows XP-era - PXE may fail)",
-            WindowsBootEra.NinexClass => "  (Windows 9x - not PXE-bootable)",
+            WindowsBootEra.NinexClass => "  (Windows 9x - experimental BIOS boot)",
             _ => entry.IsLikelyFloppy
                 ? "  (floppy)"
                 : entry.Metadata.Profile is { } p

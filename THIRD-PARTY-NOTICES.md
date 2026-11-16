@@ -1,5 +1,11 @@
 # Third-Party Notices
 
+The optional Windows 98 preparation command uses Windows' built-in cabinet API.
+It extracts DOS components from the user's own CD; Microsoft and Oak binaries
+are not distributed with Everboot. The embedded 512-byte DOS bootstrap and MBR
+are original Everboot code under this project's MIT license, with assembly
+sources in `tools/boot`. See `docs/own-bootstrap.md` for the file provenance.
+
 Everboot is distributed under the MIT License (see `LICENSE`). It links against
 the following third-party components. All are under permissive (non-copyleft)
 licenses; full license text for each can be retrieved from the linked source.
@@ -25,6 +31,18 @@ licenses; full license text for each can be retrieved from the linked source.
   ISO images without extracting them to disk).
 - Copyright (c) Quamotion and DiscUtils contributors.
 - License: MIT — https://github.com/DiscUtils/DiscUtils/blob/develop/LICENSE.txt
+
+## QEMU (optional, not bundled)
+
+- The experimental VM client invokes a separately installed QEMU executable.
+- QEMU is principally GPL-2.0, with component-specific licenses for firmware and
+  libraries. Upstream licensing: https://www.qemu.org/docs/master/about/license.html
+- No QEMU binaries, firmware, or guest OS images are committed or redistributed
+  by this project. Local test downloads under `artifacts/` are ignored.
+- Validation used Ubuntu QEMU 8.2.2 and the Windows 11.1.0 build from
+  https://qemu.weilnetz.de/w64/qemu-w64-setup-20260811.exe (upstream SHA-512 checked).
+- Future bundled packages must preserve licenses and meet applicable source
+  distribution obligations. Everboot's MIT license does not replace those licenses.
 
 ## wimboot (not bundled)
 

@@ -1,0 +1,45 @@
+@page "/"
+@inject BootCatalog Catalog
+@inject BootConfigGenerator Generator
+@inject NfsStatus NfsStatus
+@inject Microsoft.Extensions.Options.IOptions<EverbootOptions> Options
+
+<PageTitle>Boot library | Everboot</PageTitle>
+<header class="page-head">
+    <div class="page-head-copy"><h1>Boot library</h1></div>
+    <div class="head-actions"><button @onclick="Refresh">Refresh library</button><a class="button secondary" href="@PxeUrl">View iPXE script</a></div>
+</header>
+@if (notice is not null) { <p class="notice" role="status">@notice</p> }
+<section class="service-band" aria-label="Streaming service status">
+    <span class="service-signal" aria-hidden="true"></span>
+    <div><strong>NFS streaming: @NfsState</strong><p>@FormatSize(NfsStatus.BytesRead) served in @NfsStatus.Reads.ToString("N0") reads.</p></div>
+</section>
+<section class="window">
+    <div class="window-bar"><span class="window-title">Images</span><span class="window-meta">@Entries.Count</span></div>
+    <div class="window-body">
+        @if (Entries.Count == 0) { <div class="empty-state"><strong>No boot images found</strong><p>Add <code>*.iso</code> or <code>*.img</code> files to the configured image folder, then refresh the library.</p></div> }
+        else {
+            <div class="image-list">
+                @foreach (var entry in Entries) {
+                    <article class="image-row" @key="entry.FileName">
+                        <div class="media-icon">@Path.GetExtension(entry.FileName).TrimStart('.')</div>
+                        <div><span class="image-name">@entry.DisplayName</span><div class="image-sub">@entry.FileName <span aria-hidden="true">/</span> @FormatSize(entry.SizeBytes) <span aria-hidden="true">/</span> @(entry.Metadata.Profile?.DisplayName ?? "Unclassified image")@(entry.Override is null ? "" : " / override active")</div></div>
+                        <div class="image-method"><span class="boot-state">@Generator.BootSummary(entry)</span></div>
+                        <div class="row-actions"><a class="row-primary" href="@($"/images/{entry.Slug}")">Configure</a><a href="@Pxe($"/isos/{Uri.EscapeDataString(entry.FileName)}")">Download</a></div>
+                    </article>
+                }
+            </div>
+        }
+    </div>
+</section>
+
+@code {
+    private string? notice;
+    private IReadOnlyList<IsoEntry> Entries => Catalog.Entries;
+    private string NfsState => !Options.Value.Nfs.Enabled ? "Disabled" : NfsStatus.Running ? "Listening" : "Starting";
+    private string PxeUrl => Pxe("/boot.ipxe");
+    private string Pxe(string path) => $"http://{new Uri(Navigation.BaseUri).Host}:{Options.Value.Http.Port}{path}";
+    [Inject] private NavigationManager Navigation { get; set; } = default!;
+    private void Refresh() { Catalog.ForceRescan(); notice = $"Catalog refreshed at {DateTime.Now:HH:mm:ss}."; }
+    private static string FormatSize(long bytes) => bytes >= 1L << 30 ? $"{bytes / (double)(1L << 30):F1} GiB" : bytes >= 1L << 20 ? $"{bytes / (double)(1L << 20):F1} MiB" : $"{bytes / 1024d:F1} KiB";
+}

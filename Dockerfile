@@ -57,6 +57,6 @@ ENV DOTNET_ENVIRONMENT=Production \
 VOLUME ["/data"]
 
 # DHCP proxy (67/68 UDP), TFTP (69 UDP), HTTP file server (8080 TCP).
-EXPOSE 67/udp 68/udp 69/udp 8080/tcp
+EXPOSE 67/udp 68/udp 69/udp 8080/tcp 111/tcp 2049/tcp 20048/tcp
 
 ENTRYPOINT ["/app/Everboot"]

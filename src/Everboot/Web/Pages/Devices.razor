@@ -1,0 +1,53 @@
+@page "/devices"
+@inject BootCatalog Catalog
+@inject BootConfigGenerator Generator
+@inject ManagementAccess Access
+
+<PageTitle>Device policies | Everboot</PageTitle>
+<header class="page-head"><div class="page-head-copy"><h1>Device policies</h1></div><div class="head-actions"><button @onclick="NewRule">New policy</button></div></header>
+<p class="notice quiet-notice">Lower priority numbers run first. When a rule includes both MAC and IP conditions, the client must match both.</p>
+@if (notice is not null) { <p class="notice @(failed ? "error" : "")" role="status">@notice</p> }
+<div class="device-layout">
+    <section class="window rule-list"><div class="window-bar"><span class="window-title">Policies</span><span class="window-meta">@Rules.Length</span></div><div class="window-body compact">
+        @if (Rules.Length == 0) { <div class="empty-state"><strong>No device policies</strong><p>Every client currently receives the full boot library.</p></div> }
+        else { @foreach (var rule in Rules.OrderBy(r => r.Priority).ThenBy(r => r.Id)) { <button class="rule-item @(rule.Id == id ? "active" : "")" @onclick="() => Select(rule)"><span class="rule-priority">@rule.Priority</span><span><strong>@rule.Name</strong><small>@(rule.Enabled ? "Enabled" : "Disabled") / @(rule.Mode == "force" ? "forced boot" : "filtered menu")</small></span></button> } }
+    </div></section>
+    <section class="window"><div class="window-bar"><span class="window-title">@(editing ? "Edit policy" : "Create policy")</span></div><div class="window-body">
+        <div class="field-grid three"><label>Name<input @bind="name" maxlength="100" /></label><label>Priority<input type="number" min="0" max="100000" @bind="priority" /></label><label class="checkbox-label"><input type="checkbox" @bind="enabled" /> Policy enabled</label></div>
+        <div class="field-grid"><label>MAC address<input @bind="mac" placeholder="52:54:00:12:34:56" /></label><label>IP address or subnet<input @bind="ip" placeholder="192.0.2.0/24" /></label></div>
+        <label>Client action<select @bind="mode"><option value="menu">Show a filtered image menu</option><option value="force">Force one image without a menu</option></select></label>
+        @if (mode == "force") {
+            <div class="choice-panel"><label>Assigned image<select @bind="forcedImage"><option value="">Choose an image</option>@foreach (var image in Catalog.Entries) { <option value="@image.FileName">@image.DisplayName</option> }</select></label><p class="form-help">The device immediately attempts this image. If it is missing or fails, Everboot stops rather than exposing another operating system.</p></div>
+        } else {
+            <div class="choice-panel"><strong>Visible boot images</strong><p class="form-help">No selections means the complete library.</p><div class="choice-grid">@foreach (var image in Catalog.Entries) { <label><input type="checkbox" checked="@selectedImages.Contains(image.FileName)" @onchange="e => ToggleImage(image.FileName, e.Value as bool? == true)" /> @image.DisplayName</label> }</div></div>
+        }
+        @if (!Access.IsLocal) { <label>Management key<input type="password" @bind="managementKey" autocomplete="current-password" /></label> }
+        <div class="form-actions"><button @onclick="Save">Save policy</button>@if (editing) { <button class="secondary" @onclick="Delete">Delete policy</button> }</div>
+    </div></section>
+</div>
+<section class="window"><div class="window-bar"><span class="window-title">Preview device</span></div><div class="window-body"><div class="field-grid"><label>Client MAC<input @bind="previewMac" /></label><label>Client IP<input @bind="previewIp" /></label></div><div class="form-actions"><button @onclick="Preview">Evaluate device</button></div>
+@if (decision is not null) { <div class="preview-result"><p><strong>Matched policy:</strong> @(decision.Rule?.Name ?? "Default library")</p>@if (decision.Error is not null) { <p class="notice error">@decision.Error</p> } else if (decision.ForcedImage is not null) { <p><strong>Forced image:</strong> @decision.ForcedImage.DisplayName · @Generator.BootSummary(decision.ForcedImage)</p> } else { <p><strong>Visible images:</strong> @decision.Images.Count</p><ul>@foreach (var image in decision.Images) { <li>@image.DisplayName — @Generator.BootSummary(image)</li> }</ul> }</div> }
+</div></section>
+
+@code {
+    private DeviceBootRule[] Rules => Catalog.Policies.Snapshot.DeviceRules ?? [];
+    private string id = "", name = "", mode = "menu", forcedImage = ""; private int priority = 100; private bool enabled = true, editing, failed; private string? mac, ip, managementKey, notice, previewMac, previewIp; private readonly HashSet<string> selectedImages = new(StringComparer.OrdinalIgnoreCase); private long revision; private BootDecision? decision;
+    protected override void OnInitialized() => NewRule();
+    private void NewRule() { editing = false; id = Guid.NewGuid().ToString("N"); name = ""; priority = Rules.Length == 0 ? 100 : Rules.Max(r => r.Priority) + 10; enabled = true; mac = ip = null; mode = "menu"; forcedImage = ""; selectedImages.Clear(); revision = Catalog.Policies.Snapshot.Revision; notice = null; }
+    private void Select(DeviceBootRule rule) { editing = true; id = rule.Id; name = rule.Name; priority = rule.Priority; enabled = rule.Enabled; mac = rule.Mac; ip = rule.Ip; mode = rule.Mode; forcedImage = rule.ForcedImage ?? ""; selectedImages.Clear(); foreach (var image in rule.Images ?? []) selectedImages.Add(image); revision = Catalog.Policies.Snapshot.Revision; notice = null; }
+    private void ToggleImage(string file, bool value) { if (value) selectedImages.Add(file); else selectedImages.Remove(file); }
+    private void Save() => Change(false);
+    private void Delete() => Change(true);
+    private void Change(bool delete)
+    {
+        failed = false;
+        try {
+            if (!Access.CanChange(managementKey)) throw new UnauthorizedAccessException("The management key is required for changes from another computer.");
+            var images = mode == "menu" && selectedImages.Count > 0 ? selectedImages.ToArray() : null;
+            Catalog.Policies.SaveRule(new(id, name.Trim(), priority, enabled, Empty(mac), Empty(ip), mode, images, Empty(forcedImage)), revision, delete);
+            notice = delete ? "Policy deleted." : "Policy saved."; if (delete) NewRule(); else { var saved = Rules.Single(r => r.Id == id); Select(saved); notice = "Policy saved."; }
+        } catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or UnauthorizedAccessException or IOException) { failed = true; notice = ex.Message; }
+    }
+    private void Preview() { failed = false; try { decision = Catalog.Policies.Decide(Catalog.Entries, previewMac, previewIp); } catch (ArgumentException ex) { failed = true; notice = ex.Message; } }
+    private static string? Empty(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+}

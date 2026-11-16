@@ -2,6 +2,76 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name": "Everboot: LAN PXE hardware test",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "publish:lan-debug",
+      "program": "${workspaceFolder}/artifacts/streaming-win-x64/Everboot.exe",
+      "args": [],
+      "cwd": "${workspaceFolder}",
+      "console": "internalConsole",
+      "internalConsoleOptions": "openOnSessionStart",
+      "checkForDevCert": false,
+      "serverReadyAction": {
+        "action": "openExternally",
+        "pattern": "Now listening on: http://0.0.0.0:8081",
+        "uriFormat": "http://localhost:8081"
+      },
+      "env": {
+        "DOTNET_ENVIRONMENT": "Production",
+        "EVERBOOT_LOG_DIR": "${workspaceFolder}/logs",
+        "Everboot__DataDirectory": "${workspaceFolder}/data",
+        "Everboot__IsoDirectory": "${workspaceFolder}/isos",
+        "Everboot__Http__BindAddress": "0.0.0.0",
+        "Everboot__Http__Port": "8081",
+        "Everboot__Dhcp__Enabled": "true",
+        "Everboot__Dhcp__Port": "67",
+        "Everboot__Dhcp__BindAddress": "0.0.0.0",
+        "Everboot__Dhcp__UnicastReplyToSource": "false",
+        "Everboot__Tftp__Port": "69",
+        "Everboot__Tftp__BindAddress": "0.0.0.0",
+        "Everboot__Nfs__Enabled": "true",
+        "Everboot__Nfs__BindAddress": "0.0.0.0",
+        "Everboot__Nfs__Port": "2049",
+        "Everboot__Nfs__MountPort": "20048",
+        "Everboot__Nfs__PortmapperPort": "111",
+        "Everboot__Iscsi__Enabled": "true",
+        "Everboot__Iscsi__BindAddress": "0.0.0.0",
+        "Everboot__Iscsi__Port": "3261",
+        "Everboot__Smb__Enabled": "true",
+        "Everboot__Smb__Port": "445"
+      }
+    },
+    {
+      "name": ".NET: PXE streaming probe (no attached media)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build:pxe-probe",
+      "program": "${workspaceFolder}/tools/PxeProbe/bin/Debug/net10.0/PxeProbe.dll",
+      "args": ["${input:pxeIso}", "${input:pxeOutput}", "--ram", "1024"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": ".NET: QEMU integration checks",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build:vm-probe",
+      "program": "${workspaceFolder}/tools/VmProbe/bin/Debug/net10.0/VmProbe.dll",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
+      "name": ".NET: QEMU client",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build",
+      "program": "${workspaceFolder}/src/Everboot/bin/Debug/net10.0/Everboot.dll",
+      "args": ["--client", "http://localhost:8080"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
+    },
+    {
       "name": ".NET: Launch Everboot (Debug)",
       "type": "coreclr",
       "request": "launch",
@@ -17,14 +87,29 @@
         "engineLogging": false
       },
       "env": {
+        "DOTNET_ENVIRONMENT": "Development",
         "EVERBOOT_LOG_DIR": "${workspaceFolder}/logs",
-        "Everboot__DataDirectory": "${workspaceFolder}/data"
+        "Everboot__DataDirectory": "${workspaceFolder}/data",
+        "Everboot__IsoDirectory": "${workspaceFolder}/isos"
       }
+    },
+    {
+      "name": ".NET: Streaming integration checks",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build:streaming-probe",
+      "program": "${workspaceFolder}/tools/StreamingProbe/bin/Debug/net10.0/StreamingProbe.dll",
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal"
     },
     {
       "name": ".NET: Attach",
       "type": "coreclr",
       "request": "attach"
     }
+  ],
+  "inputs": [
+    { "id": "pxeIso", "type": "promptString", "description": "Path to the server-side live ISO" },
+    { "id": "pxeOutput", "type": "promptString", "description": "New directory for retained PXE test artifacts" }
   ]
 }

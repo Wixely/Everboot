@@ -1,0 +1,28 @@
+@page "/diagnostics"
+@inject BootCatalog Catalog
+@inject BootConfigGenerator Generator
+
+<PageTitle>Diagnostics | Everboot</PageTitle>
+<header class="page-head"><div class="page-head-copy"><h1>Image diagnostics</h1></div></header>
+<section class="window">
+    <div class="window-bar"><span class="window-title">Detection results</span><span class="window-meta">@Entries.Count</span></div>
+    <div class="window-body">
+        @if (Entries.Count == 0) { <div class="empty-state"><strong>No images to inspect</strong><p>Add media to the boot library and refresh the catalog.</p></div> }
+        else {
+            <div class="wrap"><table><thead><tr><th>File</th><th>Size</th><th>Volume label</th><th>Layout</th><th>Windows era</th><th>Profile</th><th>Direct boot</th><th>Floppy</th></tr></thead><tbody>
+            @foreach (var entry in Entries) {
+                var recipes = Generator.GetApplicableRecipes(entry);
+                <tr @key="entry.FileName">
+                    <td><a href="@($"/images/{entry.Slug}")">@entry.FileName</a></td><td>@FormatSize(entry.SizeBytes)</td><td>@(entry.Metadata.VolumeLabel ?? "—")</td><td>@entry.Metadata.Layout</td><td>@entry.Metadata.WindowsEra</td><td>@(entry.Metadata.Profile?.DisplayName ?? "no match")</td>
+                    <td>@if (recipes.Count > 0) { <span class="yes">@recipes.Count recipe(s)</span><br /><small>@string.Join(", ", recipes.Select(r => r.Id))</small> } else { <span class="no">no</span> }</td><td>@(entry.IsLikelyFloppy ? "yes" : "no")</td>
+                </tr>
+            }
+            </tbody></table></div>
+        }
+    </div>
+</section>
+
+@code {
+    private IReadOnlyList<IsoEntry> Entries => Catalog.Entries;
+    private static string FormatSize(long bytes) => bytes >= 1L << 30 ? $"{bytes / (double)(1L << 30):F1} GiB" : bytes >= 1L << 20 ? $"{bytes / (double)(1L << 20):F1} MiB" : $"{bytes / 1024d:F1} KiB";
+}

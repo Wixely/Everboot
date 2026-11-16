@@ -1,0 +1,33 @@
+@using Everboot.Services.Vm
+@implements IAsyncDisposable
+@inject VmLauncherState State
+
+<PageTitle>Run an image | Everboot</PageTitle>
+<header class="topbar"><div class="top-brand">EVERBOOT / LOCAL VM</div></header>
+<main class="vm-main">
+    <header class="page-head"><div class="page-head-copy"><h1>Run an image</h1><p>The virtual machine reads the image from the server.</p></div></header>
+    @if (State.Notice is not null) { <p class="notice @(State.NoticeIsError ? "error" : "")" role="status">@State.Notice</p> }
+    <div class="vm-toolbar"><button class="button secondary" @onclick="Refresh">Refresh library and status</button><span>@State.Active running</span></div>
+    <div class="vm-grid">
+        @if (State.Images.Length == 0) { <div class="empty-state"><strong>No images available</strong><p>Add ISO or IMG files to the Everboot server, then refresh.</p></div> }
+        @foreach (var image in State.Images) {
+            <article class="vm-card" @key="image.Path"><h2>@image.Name</h2><small>@((image.Size / 1048576d).ToString("F1")) MiB on server</small>
+                @if (image.Problem is not null) { <p role="status">@image.Problem</p><small>Check this image's boot profile on the server, then refresh.</small> }
+                else { <label>Virtual PC<select value="@Profile(image)" @onchange="e => profiles[image.Path] = e.Value?.ToString() ?? image.Profile">@foreach (var profile in QemuLaunch.Profiles) { <option value="@profile">@ProfileLabel(profile)</option> }</select></label><button disabled="@(State.Active > 0 || busy)" @onclick="() => Start(image)">Start virtual machine</button> }
+            </article>
+        }
+    </div>
+</main>
+
+@code {
+    private readonly Dictionary<string, string> profiles = new(StringComparer.Ordinal);
+    private PeriodicTimer? timer; private CancellationTokenSource? timerStop; private bool busy;
+    protected override async Task OnInitializedAsync() { await State.RefreshAsync(); SeedProfiles(); timer = new(TimeSpan.FromSeconds(2)); timerStop = new(); _ = Poll(timerStop.Token); }
+    private string Profile(VmImage image) => profiles.GetValueOrDefault(image.Path, image.Profile);
+    private void SeedProfiles() { foreach (var image in State.Images) profiles.TryAdd(image.Path, image.Profile); }
+    private async Task Refresh() { busy = true; await State.RefreshAsync(); SeedProfiles(); busy = false; }
+    private async Task Start(VmImage image) { busy = true; await State.StartAsync(image.Path, Profile(image)); busy = false; }
+    private async Task Poll(CancellationToken ct) { try { while (timer is not null && await timer.WaitForNextTickAsync(ct)) { await State.PollAsync(); await InvokeAsync(StateHasChanged); } } catch (OperationCanceledException) { } }
+    private static string ProfileLabel(string value) => value switch { "legacy" => "DOS / Windows 9x · 128 MB", "classic" => "Windows 2000 / XP · 512 MB", _ => "Newer systems · 2 GB" };
+    public ValueTask DisposeAsync() { timerStop?.Cancel(); timer?.Dispose(); timerStop?.Dispose(); return ValueTask.CompletedTask; }
+}

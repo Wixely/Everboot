@@ -22,10 +22,10 @@ internal enum WindowsBootEra
     /// <summary>Vista+ (boot.wim + bootmgr / bootmgfw.efi). wimboot-able.</summary>
     Modern,
     /// <summary>XP / 2000 / Server 2003 / NT (i386\\setupldr.bin). PXE-bootable
-    /// only via sanboot, and even then unreliable.</summary>
+    /// with OS network-storage support required after firmware handoff.</summary>
     XpClass,
     /// <summary>Windows 95 / 98 / ME (WIN9x\\SETUP.EXE). Not PXE-bootable
-    /// directly - needs a DOS bring-up first.</summary>
+    /// via UEFI; experimental BIOS boot needs compatible DOS CD access.</summary>
     NinexClass,
 }
 
@@ -47,7 +47,8 @@ internal sealed record IsoMetadata(
     WindowsBootFiles? WindowsFiles,
     DistroProfile? Profile,
     string? VolumeLabel,
-    string? Squashfs)
+    string? Squashfs,
+    IReadOnlyList<DirectBootRecipe>? AvailableRecipes = null)
 {
     public bool IsModernWindows => WindowsEra == WindowsBootEra.Modern && WindowsFiles is not null;
 }
@@ -113,6 +114,7 @@ internal sealed class IsoInspector
         DistroProfile? profile = null;
         string? volumeLabel = null;
         string? squashfs = null;
+        IReadOnlyList<DirectBootRecipe> availableRecipes = Array.Empty<DirectBootRecipe>();
 
         try
         {
@@ -153,21 +155,26 @@ internal sealed class IsoInspector
                 return new IsoMetadata(IsoLayout.None, WindowsBootEra.None, null, null, null, null);
             }
 
-            // Prefer ISO9660+Joliet for Windows boot file probing - boot.wim etc. live
-            // on the ISO9660 side of every Windows install ISO since Vista.
+            // Prefer the complete UDF view on bridge DVDs; ISO9660 may contain
+            // only a readme directing users to a UDF-capable operating system.
             stream.Position = 0;
             DiscFileSystem? fs = null;
             try
             {
-                fs = layout.HasFlag(IsoLayout.Iso9660)
-                    ? new CDReader(stream, joliet: true)
-                    : new UdfReader(stream);
+                fs = IsoFileSystem.Open(stream, layout)!;
 
                 volumeLabel = TryReadVolumeLabel(fs);
                 (era, winFiles) = ProbeWindowsEra(fs);
                 profile = DistroProfiles.Match(
                     volumeLabel,
                     path => IsoFileResolver.Resolve(fs, path) is not null);
+
+                // A distro label alone is not enough: never advertise a recipe
+                // whose kernel or initrd is missing from this particular image.
+                availableRecipes = profile?.DirectBoots.Where(recipe =>
+                    IsoFileResolver.Resolve(fs, recipe.KernelPath) is not null &&
+                    IsoFileResolver.Resolve(fs, recipe.InitrdPath) is not null).ToArray()
+                    ?? Array.Empty<DirectBootRecipe>();
 
                 if (profile is { SquashfsDir: not null, SquashfsPattern: not null })
                 {
@@ -201,7 +208,7 @@ internal sealed class IsoInspector
             return new IsoMetadata(IsoLayout.None, WindowsBootEra.None, null, null, null, null);
         }
 
-        return new IsoMetadata(layout, era, winFiles, profile, volumeLabel, squashfs);
+        return new IsoMetadata(layout, era, winFiles, profile, volumeLabel, squashfs, availableRecipes);
     }
 
     /// <summary>
@@ -231,7 +238,7 @@ internal sealed class IsoInspector
         },
     };
 
-    private static string? FindLargestMatchingFile(DiscFileSystem fs, string directory, string pattern)
+    internal static string? FindLargestMatchingFile(DiscFileSystem fs, string directory, string pattern)
     {
         // 1. Fast path - try well-known filenames first via the resolver we
         //    already know works (this is what the HTTP /iso route uses).
@@ -340,7 +347,8 @@ internal sealed class IsoInspector
         try
         {
             var label = fs.VolumeLabel;
-            return string.IsNullOrWhiteSpace(label) ? null : label.Trim();
+            label = label?.Trim('\0', ' ');
+            return string.IsNullOrWhiteSpace(label) ? null : label;
         }
         catch
         {

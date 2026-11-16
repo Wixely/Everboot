@@ -1,0 +1,15 @@
+@inherits LayoutComponentBase
+
+<header class="topbar">
+    <a class="top-brand" href="/" aria-label="Everboot boot library"><span>EVER</span>BOOT</a>
+</header>
+<div class="app-shell">
+    <aside class="sidebar">
+        <nav class="side-nav" aria-label="Primary">
+            <NavLink href="/" Match="NavLinkMatch.All">Images</NavLink>
+            <NavLink href="/devices">Policies</NavLink>
+            <NavLink href="/diagnostics">Diagnostics</NavLink>
+        </nav>
+    </aside>
+    <main id="content">@Body</main>
+</div>

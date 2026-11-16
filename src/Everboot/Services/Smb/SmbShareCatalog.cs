@@ -3,8 +3,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using DiscUtils;
-using DiscUtils.Iso9660;
-using DiscUtils.Udf;
 using Everboot.Configuration;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -20,6 +18,9 @@ internal sealed class SmbShareCatalog
     private readonly BootCatalog _bootCatalog;
     private readonly ILogger<SmbShareCatalog> _logger;
     private readonly SmbOptions _options;
+    private long _bytesRead;
+    public long BytesRead => System.Threading.Interlocked.Read(ref _bytesRead);
+    public void RecordRead(int bytes) => System.Threading.Interlocked.Add(ref _bytesRead, bytes);
 
     public SmbShareCatalog(BootCatalog bootCatalog, IOptions<EverbootOptions> options, ILogger<SmbShareCatalog> logger)
     {
@@ -45,7 +46,7 @@ internal sealed class SmbShareCatalog
         try
         {
             // Hold the ISO file open for the lifetime of the share. Multiple
-            // concurrent SMB handles share the same backing CDReader, which is
+            // concurrent SMB handles share the same backing filesystem, which is
             // safe for read-only traversal.
             var stream = new FileStream(
                 entry.FullPath,
@@ -55,17 +56,10 @@ internal sealed class SmbShareCatalog
                 64 * 1024,
                 FileOptions.Asynchronous | FileOptions.RandomAccess);
 
-            DiscFileSystem fs;
-            stream.Position = 0;
-            if (entry.Metadata.Layout.HasFlag(IsoLayout.Iso9660))
-            {
-                fs = new CDReader(stream, joliet: true);
-            }
-            else if (entry.Metadata.Layout.HasFlag(IsoLayout.Udf))
-            {
-                fs = new UdfReader(stream);
-            }
-            else
+            DiscFileSystem? fs;
+            try { fs = IsoFileSystem.Open(stream, entry.Metadata.Layout); }
+            catch { stream.Dispose(); throw; }
+            if (fs is null)
             {
                 stream.Dispose();
                 _logger.LogWarning("SMB share '{Share}' refused: image has no ISO9660/UDF layout", shareName);
