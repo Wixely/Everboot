@@ -12,6 +12,20 @@ into the library, supply the iPXE boot loaders, and clients on the same network
 receive a generated boot menu. Image overrides and device policies let you tune
 the menu without modifying the original media.
 
+## Screenshots
+
+<p align="center">
+  <img src="docs/images/everboot_console.png" width="900" alt="Everboot web workspace showing the boot image library">
+</p>
+
+<p align="center"><em>Manage boot images, detection results, and downloads from the web workspace.</em></p>
+
+<p align="center">
+  <img src="docs/images/everboot_pxe.png" width="900" alt="Everboot iPXE menu showing available boot images and tools">
+</p>
+
+<p align="center"><em>Select an image or open recovery tools from the generated iPXE menu.</em></p>
+
 ## What it runs
 
 | Service | Purpose |
